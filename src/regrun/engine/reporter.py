@@ -68,9 +68,7 @@ def format_text(run_result: RunResult) -> str:
     lines.append(
         f"  {'ID':<{id_width}}  {'Test':<{name_width}}  {'Status':<8}  {'Time':>8}  Details"
     )
-    lines.append(
-        f"  {'-' * id_width}  {'-' * name_width}  {'-' * 8}  {'-' * 8}  {'-' * 30}"
-    )
+    lines.append(f"  {'-' * id_width}  {'-' * name_width}  {'-' * 8}  {'-' * 8}  {'-' * 30}")
 
     # Table rows
     current_group = ""

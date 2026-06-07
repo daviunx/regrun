@@ -25,7 +25,9 @@ logger = structlog.get_logger()
 
 
 def _discover_yaml_files(
-    test_dir: Path, layer: str | None, skip_setup: bool = False,
+    test_dir: Path,
+    layer: str | None,
+    skip_setup: bool = False,
 ) -> list[Path]:
     """Discover YAML test files in a directory, optionally filtered by layer.
 
@@ -235,25 +237,29 @@ async def _run_tests(
 
             for test in group.tests:
                 if aborted:
-                    all_results.append(TestResult(
-                        test_id=test.id,
-                        test_name=test.name,
-                        group_name=group.name,
-                        passed=False,
-                        skipped=True,
-                    ))
+                    all_results.append(
+                        TestResult(
+                            test_id=test.id,
+                            test_name=test.name,
+                            group_name=group.name,
+                            passed=False,
+                            skipped=True,
+                        )
+                    )
                     continue
 
                 runner = _get_runner_for_test(test, test_file, runner_cache)
                 if runner is None:
                     effective_type = test.runner or test_file.meta.runner
-                    all_results.append(TestResult(
-                        test_id=test.id,
-                        test_name=test.name,
-                        group_name=group.name,
-                        passed=False,
-                        error=f"Unsupported runner: {effective_type}",
-                    ))
+                    all_results.append(
+                        TestResult(
+                            test_id=test.id,
+                            test_name=test.name,
+                            group_name=group.name,
+                            passed=False,
+                            error=f"Unsupported runner: {effective_type}",
+                        )
+                    )
                     continue
 
                 result = await _execute_single_test(
@@ -384,14 +390,35 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("test_dir", type=click.Path(exists=True, file_okay=False, resolve_path=True))
-@click.option("--layer", type=click.Choice(["setup", "api", "mcp", "chat"]), default=None, help="Filter by layer")
+@click.option(
+    "--layer",
+    type=click.Choice(["setup", "api", "mcp", "chat"]),
+    default=None,
+    help="Filter by layer",
+)
 @click.option("--group", "group_str", default=None, help="Comma-separated group IDs (e.g. 1,2,3)")
-@click.option("--priority", type=click.Choice(["high", "medium", "low"]), default=None, help="Filter by priority")
+@click.option(
+    "--priority",
+    type=click.Choice(["high", "medium", "low"]),
+    default=None,
+    help="Filter by priority",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Show test plan without executing")
-@click.option("--output", "output_format", type=click.Choice(["text", "json"]), default="text", help="Output format")
+@click.option(
+    "--output",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format",
+)
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Log request/response bodies")
 @click.option("--fail-fast", is_flag=True, default=False, help="Stop on first failure")
-@click.option("--skip-setup", is_flag=True, default=False, help="Skip setup layer (use when variables are already populated)")
+@click.option(
+    "--skip-setup",
+    is_flag=True,
+    default=False,
+    help="Skip setup layer (use when variables are already populated)",
+)
 def run(
     test_dir: str,
     layer: str | None,
@@ -419,7 +446,9 @@ def run(
         try:
             group_ids = [int(g.strip()) for g in group_str.split(",")]
         except ValueError:
-            raise click.ClickException(f"Invalid group IDs: '{group_str}'. Use comma-separated integers.")
+            raise click.ClickException(
+                f"Invalid group IDs: '{group_str}'. Use comma-separated integers."
+            )
 
     # Discover YAML files
     yaml_files = _discover_yaml_files(test_path, layer, skip_setup)
@@ -455,9 +484,7 @@ def run(
         return
 
     # Execute tests
-    run_result = asyncio.run(
-        _run_tests(matched_paths, test_files, fail_fast, verbose)
-    )
+    run_result = asyncio.run(_run_tests(matched_paths, test_files, fail_fast, verbose))
 
     # Output results
     if output_format == "json":

@@ -93,9 +93,7 @@ class BashRunner:
             # Stop on non-zero exit code
             if exit_code != 0:
                 duration_ms = (time.monotonic() - start) * 1000
-                error_msg = (
-                    f"Command {idx} exited with code {exit_code}"
-                )
+                error_msg = f"Command {idx} exited with code {exit_code}"
                 if stderr:
                     error_msg = f"{error_msg}: {stderr[:500]}"
 

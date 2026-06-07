@@ -182,13 +182,15 @@ def _evaluate_json_paths(
 
     if not isinstance(response_body, (dict, list)):
         for path, condition in json_path_assertions.items():
-            results.append(AssertionResult(
-                passed=False,
-                assertion_type=f"json_path({path})",
-                expected=condition,
-                actual=None,
-                message="Response body is not a JSON object",
-            ))
+            results.append(
+                AssertionResult(
+                    passed=False,
+                    assertion_type=f"json_path({path})",
+                    expected=condition,
+                    actual=None,
+                    message="Response body is not a JSON object",
+                )
+            )
         return results
 
     for path, condition in json_path_assertions.items():
@@ -232,7 +234,9 @@ def _evaluate_single_json_path(
 
     if "not_empty" in condition:
         expected_not_empty = condition["not_empty"]
-        is_not_empty = has_match and actual_value is not None and actual_value != "" and actual_value != []
+        is_not_empty = (
+            has_match and actual_value is not None and actual_value != "" and actual_value != []
+        )
         passed = is_not_empty == expected_not_empty
         return AssertionResult(
             passed=passed,

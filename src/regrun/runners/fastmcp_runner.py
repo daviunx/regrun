@@ -101,8 +101,10 @@ class FastMcpRunner:
                     returncode=returncode,
                     stdout_preview=stdout[:200] if stdout else None,
                 )
-                error_text = stdout.strip() if stdout else (
-                    stderr.strip() if stderr else f"fastmcp exited with code {returncode}"
+                error_text = (
+                    stdout.strip()
+                    if stdout
+                    else (stderr.strip() if stderr else f"fastmcp exited with code {returncode}")
                 )
                 return RunnerResponse(
                     status_code=None,
@@ -145,7 +147,10 @@ class FastMcpRunner:
         )
 
     def _resolve_auth_key(
-        self, test: Test, variables: VariableStore, default_auth: str | None = None,
+        self,
+        test: Test,
+        variables: VariableStore,
+        default_auth: str | None = None,
     ) -> str | None:
         """Resolve the authentication key/token for the MCP call.
 
