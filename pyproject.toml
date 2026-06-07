@@ -1,0 +1,43 @@
+[project]
+name = "regrun"
+version = "0.1.0"
+description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
+authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "httpx>=0.28",
+    "click>=8.1",
+    "jinja2>=3.1",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.0",
+    "jsonpath-ng>=1.6",
+    "websockets>=13.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/daviunx/regrun"
+Repository = "https://github.com/daviunx/regrun"
+Issues = "https://github.com/daviunx/regrun/issues"
+
+[project.scripts]
+regrun = "regrun.cli:cli"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
