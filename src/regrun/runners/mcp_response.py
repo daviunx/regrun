@@ -19,7 +19,7 @@ class McpResponse(BaseModel):
     """Normalized MCP response after pattern detection and unwrapping."""
 
     is_error: bool
-    body: dict | str | None = None
+    body: dict | list | str | None = None
     raw: dict
 
 
