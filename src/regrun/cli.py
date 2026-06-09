@@ -23,6 +23,68 @@ from regrun.runners.websocket_runner import WebSocketRunner
 
 logger = structlog.get_logger()
 
+CONFIG_FILENAME = "regrun.yaml"
+
+
+def _find_config() -> tuple[dict, Path] | None:
+    """Walk up from CWD looking for regrun.yaml.
+
+    Returns (parsed_config, project_root) or None if not found.
+    """
+    current = Path.cwd().resolve()
+    for _ in range(10):
+        config_path = current / CONFIG_FILENAME
+        if config_path.is_file():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            if isinstance(config, dict):
+                return config, current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def _resolve_target(target: str) -> Path:
+    """Resolve a CLI target to a test directory path.
+
+    If target is an existing directory, use it directly.
+    Otherwise, look up as a product name in regrun.yaml.
+    """
+    target_path = Path(target)
+    if target_path.is_dir():
+        return target_path.resolve()
+
+    # Not a directory — look up in regrun.yaml
+    result = _find_config()
+    if result is None:
+        raise click.ClickException(
+            f"'{target}' is not a directory and no {CONFIG_FILENAME} found. "
+            f"Pass a directory path or create {CONFIG_FILENAME} with a 'paths' key."
+        )
+
+    config, project_root = result
+    paths = config.get("paths")
+    if not paths or not isinstance(paths, dict):
+        raise click.ClickException(
+            f"{CONFIG_FILENAME} found but missing 'paths' mapping."
+        )
+
+    test_path_rel = paths.get(target)
+    if not test_path_rel:
+        known = ", ".join(paths.keys())
+        raise click.ClickException(
+            f"Unknown product '{target}'. Known: {known}"
+        )
+
+    resolved = project_root / test_path_rel
+    if not resolved.is_dir():
+        raise click.ClickException(
+            f"Path for '{target}' resolved to {resolved} but directory not found."
+        )
+    return resolved
+
 
 def _discover_yaml_files(
     test_dir: Path,
@@ -389,7 +451,7 @@ def cli() -> None:
 
 
 @cli.command()
-@click.argument("test_dir", type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.argument("target")
 @click.option(
     "--layer",
     type=click.Choice(["setup", "api", "mcp", "chat"]),
@@ -420,7 +482,7 @@ def cli() -> None:
     help="Skip setup layer (use when variables are already populated)",
 )
 def run(
-    test_dir: str,
+    target: str,
     layer: str | None,
     group_str: str | None,
     priority: str | None,
@@ -430,15 +492,15 @@ def run(
     fail_fast: bool,
     skip_setup: bool,
 ) -> None:
-    """Run regression tests from a directory.
+    """Run regression tests.
 
-    TEST_DIR is the path to a directory containing YAML test files.
+    TARGET is a directory path or a product name from regrun.yaml.
     """
     # Merge CLI verbose with env setting
     verbose = verbose or settings.verbose
     _configure_logging(verbose)
 
-    test_path = Path(test_dir)
+    test_path = _resolve_target(target)
 
     # Parse group IDs
     group_ids: list[int] | None = None
@@ -495,6 +557,31 @@ def run(
     # Exit with non-zero if any failures
     if run_result.failed > 0 or run_result.errors > 0:
         sys.exit(1)
+
+
+@cli.command("list")
+def list_products() -> None:
+    """List products registered in regrun.yaml."""
+    result = _find_config()
+    if result is None:
+        raise click.ClickException(
+            f"No {CONFIG_FILENAME} found. Create one with a 'paths' key."
+        )
+
+    config, project_root = result
+    paths = config.get("paths")
+    if not paths or not isinstance(paths, dict):
+        raise click.ClickException(f"{CONFIG_FILENAME} has no 'paths' mapping.")
+
+    click.echo(f"\nProducts ({CONFIG_FILENAME}):\n")
+    for name, rel_path in paths.items():
+        full = project_root / rel_path
+        if full.is_dir():
+            count = len(list(full.glob("*.yaml")))
+            click.echo(f"  {name:<20} {rel_path}  ({count} files)")
+        else:
+            click.echo(f"  {name:<20} {rel_path}  (not found)")
+    click.echo("")
 
 
 if __name__ == "__main__":
