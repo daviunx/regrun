@@ -67,16 +67,12 @@ def _resolve_target(target: str) -> Path:
     config, project_root = result
     paths = config.get("paths")
     if not paths or not isinstance(paths, dict):
-        raise click.ClickException(
-            f"{CONFIG_FILENAME} found but missing 'paths' mapping."
-        )
+        raise click.ClickException(f"{CONFIG_FILENAME} found but missing 'paths' mapping.")
 
     test_path_rel = paths.get(target)
     if not test_path_rel:
         known = ", ".join(paths.keys())
-        raise click.ClickException(
-            f"Unknown product '{target}'. Known: {known}"
-        )
+        raise click.ClickException(f"Unknown product '{target}'. Known: {known}")
 
     resolved = project_root / test_path_rel
     if not resolved.is_dir():
@@ -564,9 +560,7 @@ def list_products() -> None:
     """List products registered in regrun.yaml."""
     result = _find_config()
     if result is None:
-        raise click.ClickException(
-            f"No {CONFIG_FILENAME} found. Create one with a 'paths' key."
-        )
+        raise click.ClickException(f"No {CONFIG_FILENAME} found. Create one with a 'paths' key.")
 
     config, project_root = result
     paths = config.get("paths")
