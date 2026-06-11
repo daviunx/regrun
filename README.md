@@ -123,7 +123,7 @@ tests/regression/  •  2 tests
 
 **File ordering:** The setup layer always runs first. All other files run alphabetically by filename. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order.
 
-**Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. Skip this with `--skip-setup` when variables are already populated from a prior run segment.
+**Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
 
 **Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file — for example `RUN_ID` defined in setup — is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
 
@@ -699,6 +699,19 @@ tests/regression/
 ```
 
 Numeric prefixes control alphabetical sort order. The setup layer is always processed first regardless of filename, but `00_` makes the intent explicit and keeps directory listings readable.
+
+---
+
+## Development
+
+Install dependencies and run the test suite:
+
+```bash
+poetry install
+poetry run pytest
+```
+
+Tests live at `tests/integration/cli/` and cover CLI behaviour end-to-end.
 
 ---
 

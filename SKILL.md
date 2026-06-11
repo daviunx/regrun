@@ -254,6 +254,8 @@ Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`
 
 - **`meta.product` is for reporting only** — it does not need to match any registry or config file. Use a meaningful name for log output and CI summaries.
 
+- **`--group` and `--priority` do not filter auto-included setup files** — when setup runs as a dependency (you did not pass `--layer setup`), it runs in full. Filters apply to setup only when explicitly targeted via `--layer setup`. `--skip-setup` still excludes setup entirely.
+
 ---
 
 ## Running Tests

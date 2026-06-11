@@ -518,7 +518,11 @@ def run(
     for path in yaml_files:
         try:
             tf = _parse_yaml_file(path)
-            tf = _filter_groups(tf, group_ids, priority)
+            # Setup runs in full when auto-included as a dependency -- group/priority
+            # filters rarely match its groups, which would drop captured variables.
+            # Only filter setup when it is the explicit target (--layer setup).
+            if not (tf.meta.layer == "setup" and layer != "setup"):
+                tf = _filter_groups(tf, group_ids, priority)
             if tf.groups:
                 matched_paths.append(path)
                 test_files.append(tf)

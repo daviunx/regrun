@@ -1,6 +1,6 @@
 [project]
 name = "regrun"
-version = "0.1.1"
+version = "0.1.2"
 description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
 authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
 readme = "README.md"
@@ -41,3 +41,8 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)"
+]
