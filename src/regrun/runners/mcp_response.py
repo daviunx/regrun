@@ -55,18 +55,54 @@ def normalize_mcp_response(raw_output: str) -> McpResponse:
     # Extract tool output from content[0].text
     tool_body = _extract_content_text(raw)
 
-    # Normalize based on detected pattern
+    return _normalize_tool_body(tool_body, is_error, raw)
+
+
+def normalize_call_tool_result(result: Any) -> McpResponse:
+    """Normalize an in-process fastmcp ``CallToolResult`` to the SAME body shape
+    the CLI path produces, so existing JSONPath / is_error assertions and
+    captures keep working unchanged.
+
+    IMPORTANT: sources the body from ``result.content[0].text`` (a JSON string),
+    NOT ``result.data`` / ``result.structured_content``. The CLI path deliberately
+    parses ``content[0].text``, and the same envelope / string-wrapped pattern
+    detection must be applied — using ``.data`` would silently change the shape
+    (and can be ``None`` for tools without structured output).
+
+    Args:
+        result: A fastmcp ``CallToolResult`` (has ``content`` + ``is_error``).
+
+    Returns:
+        McpResponse with normalized body suitable for JSONPath assertions.
+    """
+    is_error = bool(getattr(result, "is_error", False))
+    tool_body = _extract_text_from_blocks(getattr(result, "content", None))
+    raw = {"is_error": is_error, "source": "in_process_call_tool_result"}
+    return _normalize_tool_body(tool_body, is_error, raw)
+
+
+def _normalize_tool_body(
+    tool_body: dict | list | str | Any | None,
+    is_error: bool,
+    raw: dict,
+) -> McpResponse:
+    """Apply pattern detection to an already-extracted tool body.
+
+    Shared by both the CLI-string path (``normalize_mcp_response``) and the
+    in-process result path (``normalize_call_tool_result``) so the resulting
+    body shape is identical.
+    """
     if tool_body is None:
         logger.debug("mcp_pattern", pattern="empty", is_error=is_error)
         return McpResponse(is_error=is_error, body=None, raw=raw)
 
     if isinstance(tool_body, str):
-        # content[0].text was not valid JSON -- keep as string
+        # content text was not valid JSON -- keep as string
         logger.debug("mcp_pattern", pattern="raw_string", is_error=is_error)
         return McpResponse(is_error=is_error, body=tool_body, raw=raw)
 
     if not isinstance(tool_body, dict):
-        # Unexpected type (list, number, etc.) -- wrap or keep as-is
+        # Unexpected type (list, number, etc.) -- keep as-is
         logger.debug("mcp_pattern", pattern="non_dict", is_error=is_error)
         return McpResponse(is_error=is_error, body=tool_body, raw=raw)
 
@@ -100,6 +136,34 @@ def _extract_content_text(raw: dict) -> dict | str | Any | None:
         return None
 
     text = first_item.get("text")
+    if text is None:
+        return None
+
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        logger.debug("content_text_not_json", text_preview=str(text)[:200])
+        return text
+
+
+def _extract_text_from_blocks(content: Any) -> dict | str | Any | None:
+    """Extract and parse the first text block from an in-process result's content.
+
+    Mirrors ``_extract_content_text`` but reads from a fastmcp ``CallToolResult``
+    content list, whose items are MCP content objects (``.text`` attribute) rather
+    than the CLI's JSON dicts (``["text"]`` key). Handles both for safety.
+
+    Returns:
+        Parsed JSON (usually dict) if the text is valid JSON, the raw text string
+        otherwise, or None if content is missing/empty/non-text.
+    """
+    if not content or not isinstance(content, (list, tuple)) or len(content) == 0:
+        return None
+
+    first_item = content[0]
+    text = getattr(first_item, "text", None)
+    if text is None and isinstance(first_item, dict):
+        text = first_item.get("text")
     if text is None:
         return None
 

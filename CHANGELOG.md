@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-14
+
+### Changed
+
+- **MCP runner is now in-process.** The `fastmcp` runner previously spawned `uvx fastmcp call` as a subprocess on every test — paying CLI startup plus a fresh HTTP connection and MCP `initialize` handshake per call. It now uses an in-process `fastmcp.Client` with a persistent session: one connection per auth context, reused across all tests, closed at run end. On a 229-test MCP suite this cut wall time from ~402s to ~92s (4.4×) with identical results. Response normalization is unchanged — the asserted body is still sourced from the tool result's text content — so existing `json_path` / `is_error` assertions and captures work without modification.
+
+### Added
+
+- `fastmcp` (`>=3.4.2,<4.0`) runtime dependency for the in-process client. `uvx` is no longer required to run MCP tests.
+
+### Notes
+
+- `requires-python` narrowed to `>=3.11,<4.0` to satisfy the transitive `openapi-pydantic` constraint pulled in by `fastmcp`.
+
 ## [0.1.2] - 2026-06-11
 
 ### Fixed

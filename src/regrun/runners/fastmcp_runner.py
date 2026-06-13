@@ -1,25 +1,33 @@
-"""MCP tool test runner via fastmcp CLI subprocess."""
+"""MCP tool test runner via an in-process, persistent fastmcp Client.
+
+Replaces the previous per-test ``uvx fastmcp call`` subprocess (which paid CLI
+startup + a fresh HTTP connection + MCP ``initialize`` handshake on EVERY test).
+This runner opens ONE fastmcp ``Client`` per auth context and reuses the session
+across all tests, collapsing ~1.6s/test of pure overhead. The asserted response
+body is mapped through the same normalizer the CLI path used, so existing
+JSONPath / is_error assertions and captures are unchanged.
+"""
 
 import asyncio
-import json
 import time
 
 import structlog
+from fastmcp import Client
 
 from regrun.engine.variables import VariableStore
 from regrun.models import AuthConfig, Test
 from regrun.runners.base import RunnerResponse
-from regrun.runners.mcp_response import normalize_mcp_response
+from regrun.runners.mcp_response import normalize_call_tool_result
 
 logger = structlog.get_logger()
 
 
 class FastMcpRunner:
-    """Runner for MCP surface tests using the fastmcp CLI subprocess.
+    """Runner for MCP surface tests using an in-process fastmcp Client.
 
-    Executes MCP tool calls by spawning ``uvx fastmcp call`` as an async
-    subprocess, then normalizes the JSON output through the MCP response
-    parser before returning results for assertion evaluation.
+    One persistent ``Client`` is opened per distinct auth context (e.g. the
+    ``prod`` and ``fresh`` api-key tokens) and reused for every tool call. Call
+    ``aclose()`` when the run finishes to close the sessions.
     """
 
     def __init__(
@@ -33,9 +41,11 @@ class FastMcpRunner:
         self._auth_configs = auth_configs
         self._timeout = timeout
         self._default_auth = default_auth
+        # One open Client per resolved auth token (None = unauthenticated).
+        self._clients: dict[str | None, Client] = {}
 
     async def execute(self, test: Test, variables: VariableStore) -> RunnerResponse:
-        """Execute an MCP tool call via the fastmcp CLI.
+        """Execute an MCP tool call via the persistent in-process client.
 
         Args:
             test: Test definition with tool name and args.
@@ -46,12 +56,9 @@ class FastMcpRunner:
             embedded in the body dict for assertion evaluation.
         """
         if not test.tool:
-            return RunnerResponse(
-                error="MCP test missing 'tool' field",
-            )
+            return RunnerResponse(error="MCP test missing 'tool' field")
 
         auth_key = self._resolve_auth_key(test, variables, self._default_auth)
-        cmd = self._build_command(test, auth_key)
 
         logger.debug(
             "mcp_request",
@@ -63,73 +70,35 @@ class FastMcpRunner:
 
         start = time.monotonic()
         try:
-            stdout, stderr, returncode = await self._run_subprocess(cmd)
-            duration_ms = (time.monotonic() - start) * 1000
-        except asyncio.TimeoutError:
-            duration_ms = (time.monotonic() - start) * 1000
-            logger.error(
-                "mcp_timeout",
-                tool=test.tool,
+            result = await asyncio.wait_for(
+                self._call_tool(auth_key, test),
                 timeout=self._timeout,
             )
+        except asyncio.TimeoutError:
+            duration_ms = (time.monotonic() - start) * 1000
+            logger.error("mcp_timeout", tool=test.tool, timeout=self._timeout)
             return RunnerResponse(
                 error=f"MCP call timed out after {self._timeout}s",
                 duration_ms=duration_ms,
             )
-
-        # Non-zero exit code from fastmcp CLI.
-        # fastmcp exits 1 when the MCP tool returns is_error: true, but
-        # still writes valid JSON to stdout. Try to parse stdout first --
-        # only treat as a subprocess error if stdout is empty or not JSON.
-        if returncode != 0:
-            duration_ms = (time.monotonic() - start) * 1000 if duration_ms == 0.0 else duration_ms
-            if stdout and stdout.strip().startswith("{"):
-                logger.debug(
-                    "mcp_error_with_json",
-                    tool=test.tool,
-                    returncode=returncode,
-                )
-                # Fall through to normal JSON parsing below
-            else:
-                # Non-JSON error output (e.g. fastmcp client-side validation).
-                # Construct a synthetic error body so the assertion engine can
-                # evaluate is_error assertions instead of treating it as a
-                # runner-level error.
-                logger.debug(
-                    "mcp_client_error",
-                    tool=test.tool,
-                    returncode=returncode,
-                    stdout_preview=stdout[:200] if stdout else None,
-                )
-                error_text = (
-                    stdout.strip()
-                    if stdout
-                    else (stderr.strip() if stderr else f"fastmcp exited with code {returncode}")
-                )
-                return RunnerResponse(
-                    status_code=None,
-                    body={"is_error": True, "error": error_text},
-                    duration_ms=duration_ms,
-                )
-
-        # Parse and normalize the MCP response
-        try:
-            mcp_response = normalize_mcp_response(stdout)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(
-                "mcp_parse_error",
-                tool=test.tool,
-                error=str(e),
-                stdout_preview=stdout[:500] if stdout else None,
-            )
+        except Exception as exc:
+            # Transport / connection / client-side validation error. Surface as a
+            # synthetic is_error body so the assertion engine can evaluate
+            # is_error assertions (matches the old CLI client-error behavior).
+            duration_ms = (time.monotonic() - start) * 1000
+            logger.debug("mcp_client_error", tool=test.tool, error=str(exc))
             return RunnerResponse(
-                error=f"Failed to parse MCP response: {e}",
+                status_code=None,
+                body={"is_error": True, "error": str(exc)},
                 duration_ms=duration_ms,
             )
 
-        # Build body with is_error embedded for assertion engine compatibility.
-        # The assertion engine's _evaluate_is_error looks for "is_error" key
-        # inside the response body dict.
+        duration_ms = (time.monotonic() - start) * 1000
+
+        mcp_response = normalize_call_tool_result(result)
+
+        # Embed is_error for assertion-engine compatibility (it reads "is_error"
+        # inside the response body dict).
         body = _embed_is_error(mcp_response.body, mcp_response.is_error)
 
         logger.debug(
@@ -140,11 +109,43 @@ class FastMcpRunner:
             body_type=type(body).__name__,
         )
 
-        return RunnerResponse(
-            status_code=None,
-            body=body,
-            duration_ms=duration_ms,
+        return RunnerResponse(status_code=None, body=body, duration_ms=duration_ms)
+
+    async def _call_tool(self, auth_key: str | None, test: Test):
+        """Resolve/open the client for this auth context and call the tool.
+
+        ``raise_on_error=False`` so a tool returning ``is_error: true`` yields a
+        result (with its content) for assertion, instead of raising.
+        """
+        client = await self._client_for(auth_key)
+        return await client.call_tool(
+            test.tool,
+            test.args or {},
+            raise_on_error=False,
         )
+
+    async def _client_for(self, auth_key: str | None) -> Client:
+        """Get-or-open the persistent client for an auth context.
+
+        A bearer-token string is passed as ``auth`` (fastmcp treats a ``str`` auth
+        as a bearer token); an http URL transport is inferred from ``server_url``.
+        """
+        client = self._clients.get(auth_key)
+        if client is None:
+            client = Client(self._server_url, auth=auth_key, timeout=self._timeout)
+            await client.__aenter__()  # open one persistent session (single initialize)
+            self._clients[auth_key] = client
+            logger.debug("mcp_client_opened", server=self._server_url, authenticated=bool(auth_key))
+        return client
+
+    async def aclose(self) -> None:
+        """Close all open client sessions. Safe to call multiple times."""
+        for client in self._clients.values():
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception as exc:  # never let cleanup mask the run result
+                logger.warning("mcp_client_close_failed", error=str(exc))
+        self._clients.clear()
 
     def _resolve_auth_key(
         self,
@@ -152,7 +153,7 @@ class FastMcpRunner:
         variables: VariableStore,
         default_auth: str | None = None,
     ) -> str | None:
-        """Resolve the authentication key/token for the MCP call.
+        """Resolve the authentication token for the MCP call.
 
         Returns the resolved token string, or None if no auth is configured.
         """
@@ -167,88 +168,15 @@ class FastMcpRunner:
 
         return variables.render_string(auth_config.token)
 
-    def _build_command(self, test: Test, auth_key: str | None) -> list[str]:
-        """Build the fastmcp CLI command as a list of arguments.
-
-        Uses ``uvx fastmcp call`` with ``--json`` for parseable output.
-        """
-        cmd: list[str] = [
-            "uvx",
-            "fastmcp",
-            "call",
-            "--server-spec",
-            self._server_url,
-            "--transport",
-            "http",
-        ]
-
-        if auth_key:
-            cmd.extend(["--auth", auth_key])
-
-        cmd.extend(["--target", test.tool])
-
-        # Serialize args to JSON -- empty dict if None
-        args_json = json.dumps(test.args or {})
-        cmd.extend(["--input-json", args_json])
-
-        cmd.append("--json")
-
-        return cmd
-
-    async def _run_subprocess(self, cmd: list[str]) -> tuple[str, str, int]:
-        """Execute the fastmcp CLI as an async subprocess with timeout.
-
-        Args:
-            cmd: Command arguments list.
-
-        Returns:
-            Tuple of (stdout, stderr, return_code).
-
-        Raises:
-            asyncio.TimeoutError: If the subprocess exceeds the configured timeout.
-        """
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            # Kill the subprocess on timeout
-            try:
-                process.kill()
-                await process.wait()
-            except ProcessLookupError:
-                pass
-            raise
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-
-        return stdout, stderr, process.returncode or 0
-
 
 def _embed_is_error(body: dict | str | None, is_error: bool) -> dict | str | None:
-    """Embed the ``is_error`` flag into the response body for assertion engine.
+    """Embed the ``is_error`` flag into the response body for the assertion engine.
 
-    The assertion engine's ``_evaluate_is_error`` looks for an ``is_error``
-    key inside the response body dict. This function ensures that key is
-    present regardless of MCP response pattern.
+    The assertion engine's ``_evaluate_is_error`` looks for an ``is_error`` key
+    inside the response body dict. This ensures the key is present regardless of
+    the MCP response pattern.
 
-    If body is not a dict (string or None), wraps it in a dict to carry
-    the is_error flag alongside the content.
-
-    Args:
-        body: Normalized MCP response body from pattern detection.
-        is_error: Top-level is_error from the MCP response.
-
-    Returns:
-        Body dict with ``is_error`` key embedded.
+    If body is not a dict (string or None), wraps it in a dict to carry the flag.
     """
     if isinstance(body, dict):
         # Only set if not already present (don't overwrite tool-level is_error)

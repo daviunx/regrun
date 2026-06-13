@@ -1,11 +1,11 @@
 [project]
 name = "regrun"
-version = "0.1.2"
+version = "0.2.0"
 description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
 authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<4.0"
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -24,6 +24,7 @@ dependencies = [
     "structlog>=24.0",
     "jsonpath-ng>=1.6",
     "websockets>=13.0",
+    "fastmcp (>=3.4.2,<4.0.0)",
 ]
 
 [project.urls]

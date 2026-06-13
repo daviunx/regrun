@@ -212,6 +212,21 @@ def _get_runner_for_test(
     return runner_cache[runner_type]
 
 
+async def _close_runners(
+    runner_cache: dict[str, HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner],
+) -> None:
+    """Close any runners holding persistent connections (e.g. the in-process
+    fastmcp client). Best-effort: a close failure must not fail the run."""
+    for runner in runner_cache.values():
+        aclose = getattr(runner, "aclose", None)
+        if aclose is None:
+            continue
+        try:
+            await aclose()
+        except Exception as exc:  # noqa: BLE001 - cleanup must not mask results
+            logger.warning("runner_close_failed", error=str(exc))
+
+
 def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
     """Print the test plan without executing."""
     click.echo("\n  DRY RUN - Test Plan")
@@ -332,6 +347,11 @@ async def _run_tests(
                 if fail_fast and not result.passed and not result.skipped:
                     logger.warning("fail_fast_triggered", test_id=test.id)
                     aborted = True
+
+        # Close persistent runner sessions opened for this file (e.g. the
+        # in-process fastmcp client). Runs after the groups loop — including on
+        # fail-fast abort — before moving to the next file.
+        await _close_runners(runner_cache)
 
     run_duration = (time.monotonic() - run_start) * 1000
 
