@@ -51,6 +51,21 @@ class BashCommand(BaseModel):
     capture: dict[str, str] | None = None
 
 
+class EventuallyConfig(BaseModel):
+    """Retry/poll configuration for asserting eventually-consistent operations.
+
+    When present on a test, the request + assertions are re-run until all
+    assertions pass or ``max_attempts`` is exhausted (see engine/retry.py).
+    """
+
+    model_config = ConfigDict(strict=False)
+
+    max_attempts: int = 10
+    interval: float = 2.0  # seconds between attempts
+    backoff: float = 1.0  # multiplier (1.0 = fixed interval)
+    initial_delay: float = 0.0  # optional wait before the first attempt
+
+
 class WebSocketConfig(BaseModel):
     """Product-agnostic WebSocket event parsing configuration."""
 
@@ -102,6 +117,9 @@ class Test(BaseModel):
     # Common fields
     assert_: Assertion = Field(alias="assert")
     capture: dict[str, str] | None = None
+
+    # Retry/poll for eventually-consistent operations (see engine/retry.py)
+    eventually: EventuallyConfig | None = None
 
 
 class Group(BaseModel):

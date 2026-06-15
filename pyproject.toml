@@ -1,6 +1,6 @@
 [project]
 name = "regrun"
-version = "0.2.0"
+version = "0.3.0"
 description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
 authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
 readme = "README.md"
@@ -45,5 +45,14 @@ line-length = 100
 
 [dependency-groups]
 dev = [
-    "pytest (>=9.0.3,<10.0.0)"
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-cov (>=6.0.0,<7.0.0)"
 ]
+
+[tool.coverage.run]
+source = ["regrun"]
+branch = true
+
+[tool.coverage.report]
+# Current measured floor (branch coverage). Raise toward 80 as suites grow.
+fail_under = 38

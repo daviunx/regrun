@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-15
+
+### Added
+
+- **`eventually:` retry primitive.** An optional `eventually:` block on any test re-runs the request and its assertions until they all pass or a retry budget is exhausted — for asserting on asynchronously-propagated state (search indexing, event processing, webhook delivery) without flaky fixed `sleep`s. Config: `max_attempts` (default 10), `interval` seconds (default 2.0), `backoff` multiplier (default 1.0 = fixed interval), `initial_delay` (default 0.0). On exhaustion the last attempt's assertion results are reported normally; runner exceptions are caught and surfaced as a failed result rather than propagated. Wired once at the run coordinator, so both the HTTP and MCP runners support it with no per-runner changes.
+
+### Internal
+
+- `pytest-cov` added with branch coverage enforcement; the retry loop lives in a self-contained `engine/retry.py` so the runners stay single-purpose.
+
 ## [0.2.0] - 2026-06-14
 
 ### Changed

@@ -13,9 +13,9 @@ import yaml
 from regrun.config import settings
 from regrun.engine.assertions import evaluate_assertions
 from regrun.engine.reporter import RunResult, TestResult, format_json, format_text
+from regrun.engine.retry import resolve_response_and_results
 from regrun.engine.variables import VariableStore, capture_from_response, render_test
 from regrun.models import Test, TestFile
-from regrun.runners.base import RunnerResponse
 from regrun.runners.bash_runner import BashRunner
 from regrun.runners.fastmcp_runner import FastMcpRunner
 from regrun.runners.httpx_runner import HttpxRunner
@@ -382,8 +382,8 @@ async def _execute_single_test(
         # Render template variables
         rendered_test = render_test(test, store)
 
-        # Execute via runner
-        response: RunnerResponse = await runner.execute(rendered_test, store)
+        # Execute via runner; an `eventually:` block retries execute+assert.
+        response, results = await resolve_response_and_results(rendered_test, runner, store)
         duration_ms = (time.monotonic() - test_start) * 1000
 
         if verbose:
@@ -394,8 +394,8 @@ async def _execute_single_test(
                 body=str(response.body)[:500] if response.body else None,
             )
 
-        # Check for runner-level error
-        if response.error:
+        # Check for runner-level error (eventually path reports via assertions)
+        if response.error and results is None:
             return TestResult(
                 test_id=test.id,
                 test_name=test.name,
@@ -410,8 +410,8 @@ async def _execute_single_test(
             captured = capture_from_response(rendered_test.capture, response.body)
             store.merge(captured)
 
-        # Evaluate assertions
-        assertion_results = evaluate_assertions(
+        # Evaluate assertions (eventually path already ran them in the retry loop)
+        assertion_results = results or evaluate_assertions(
             rendered_test.assert_,
             response.status_code,
             response.body,
