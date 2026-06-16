@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-16
+
+### Added
+
+- **`not_contains` json_path operator.** Array-exclusion assertion: `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` passes when no value matched by the path equals the expected value (evaluated across **all** matches, with the same string-coerced equality fallback as `equals`). An empty or missing match set passes (the value is vacuously absent). Enables state-independent cross-tenant isolation checks — assert a forbidden id is absent from a result set regardless of how many own-account results the query returns — without relying on `total == 0` or test-ordering tricks. Equality coercion shared with `equals` via a new internal `_loose_eq` helper.
+
 ## [0.3.0] - 2026-06-15
 
 ### Added

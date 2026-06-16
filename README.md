@@ -406,6 +406,7 @@ Each entry under `json_path:` maps a JSONPath expression to one operator:
 | `starts_with` | `"$.key": { starts_with: "ntk_" }` | Prefix check |
 | `matches` | `"$.slug": { matches: "^[a-z0-9-]+$" }` | Regex search |
 | `not_empty` | `"$.items": { not_empty: true }` | Value is non-empty string, list, or dict |
+| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion — passes when no value matched by the path equals the expected value (all matches, string-coerced); empty/missing match set passes |
 
 Note: numeric operators (`gt`, `gte`, `lt`, `lte`) are the correct names. `greater_than`, `less_than`, `>=`, and `<=` are not valid.
 

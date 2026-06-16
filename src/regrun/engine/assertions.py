@@ -246,6 +246,13 @@ def _evaluate_single_json_path(
             message=f"Value {'is not empty' if is_not_empty else 'is empty'}, expected {'not empty' if expected_not_empty else 'empty'}",
         )
 
+    # not_contains is evaluated BEFORE the has_match guard: an empty match set
+    # (e.g. ``$.results[*].id`` against zero results) must PASS — the value is
+    # vacuously absent. Checks every matched value, not just the first.
+    if "not_contains" in condition:
+        match_values = [m.value for m in matches]
+        return _check_not_contains(path, condition["not_contains"], match_values)
+
     if not has_match:
         return AssertionResult(
             passed=False,
@@ -288,14 +295,23 @@ def _evaluate_single_json_path(
     )
 
 
+def _loose_eq(a: Any, b: Any) -> bool:
+    """Equality with a string-coerced fallback for JSON type mismatches.
+
+    e.g. int ``42`` equals ``"42"`` produced by a ``{{VAR}}`` substitution.
+    Shared by ``equals`` and ``not_contains``.
+    """
+    if a == b:
+        return True
+    try:
+        return str(a) == str(b)
+    except (TypeError, ValueError):
+        return False
+
+
 def _check_equals(path: str, expected: Any, actual: Any) -> AssertionResult:
     """Check exact equality, with string-coerced fallback for type mismatches."""
-    passed = actual == expected
-    if not passed:
-        try:
-            passed = str(actual) == str(expected)
-        except (TypeError, ValueError):
-            pass
+    passed = _loose_eq(actual, expected)
     return AssertionResult(
         passed=passed,
         assertion_type=f"json_path({path}).equals",
@@ -315,6 +331,24 @@ def _check_contains(path: str, substring: str, actual: Any) -> AssertionResult:
         expected=substring,
         actual=actual_str,
         message=f"Value {'contains' if passed else 'does not contain'} '{substring}'",
+    )
+
+
+def _check_not_contains(path: str, expected: Any, values: list[Any]) -> AssertionResult:
+    """Check that NONE of the values matched by the JSONPath equals ``expected``.
+
+    Used for array exclusion, e.g. asserting a forbidden id is absent from
+    ``$.results[*].id``. Uses the same string-coerced equality fallback as
+    ``equals`` so ``42`` and ``"42"`` compare equal. An empty value set passes.
+    """
+    found = any(_loose_eq(v, expected) for v in values)
+    passed = not found
+    return AssertionResult(
+        passed=passed,
+        assertion_type=f"json_path({path}).not_contains",
+        expected=expected,
+        actual=values,
+        message=f"Value set {'does not contain' if passed else 'contains'} {expected!r} (n={len(values)})",
     )
 
 

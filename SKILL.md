@@ -170,6 +170,7 @@ groups:
 | `lte` | `{ lte: 99 }` | Numeric less-than-or-equal |
 | `starts_with` | `{ starts_with: "ntk_" }` | String prefix |
 | `matches` | `{ matches: "^[a-z]+$" }` | Regex search (`re.search`) |
+| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when NO value matched by the path equals the expected value (all matches, string-coerced). Empty/missing match set passes. Use for isolation checks — assert a forbidden value is absent regardless of how many results return |
 
 ### Required assertions by operation
 
