@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-06-21
+
+### Internal
+
+- **Release plumbing only — no runtime/assertion behaviour change.** Cuts a tagged
+  release so the `not_contains` operator (shipped in 0.4.0) propagates to fresh
+  builds of the regression-runner image, and fires the `docker-publish` workflow
+  added after 0.4.0 (publishes `ghcr.io/daviunx/regrun:{version}` + `:latest` on
+  `v*.*.*` tags).
+
 ## [0.4.0] - 2026-06-16
 
 ### Added
