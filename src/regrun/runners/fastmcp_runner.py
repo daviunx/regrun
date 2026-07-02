@@ -60,6 +60,12 @@ class FastMcpRunner:
 
         auth_key = self._resolve_auth_key(test, variables, self._default_auth)
 
+        # Per-test ``timeout`` (seconds) overrides the runner default when set.
+        # This bounds the outer ``wait_for``, which is the effective ceiling on
+        # the call. The persistent Client's own timeout stays at the runner
+        # default because that client is cached and shared across tests.
+        timeout = test.timeout if test.timeout is not None else self._timeout
+
         logger.debug(
             "mcp_request",
             tool=test.tool,
@@ -72,13 +78,13 @@ class FastMcpRunner:
         try:
             result = await asyncio.wait_for(
                 self._call_tool(auth_key, test),
-                timeout=self._timeout,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             duration_ms = (time.monotonic() - start) * 1000
-            logger.error("mcp_timeout", tool=test.tool, timeout=self._timeout)
+            logger.error("mcp_timeout", tool=test.tool, timeout=timeout)
             return RunnerResponse(
-                error=f"MCP call timed out after {self._timeout}s",
+                error=f"MCP call timed out after {timeout}s",
                 duration_ms=duration_ms,
             )
         except Exception as exc:

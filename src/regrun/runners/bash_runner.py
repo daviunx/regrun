@@ -46,6 +46,12 @@ class BashRunner:
                 error="No commands defined for bash test",
             )
 
+        # Per-test ``timeout`` (seconds) overrides the runner default when set.
+        # Long-running polls (worker re-index waits) declare a wider budget in
+        # YAML; without this every command was capped at the construction-time
+        # default and killed mid-poll.
+        timeout = test.timeout if test.timeout is not None else self._timeout
+
         start = time.monotonic()
         last_stdout = ""
         last_exit_code = 0
@@ -62,7 +68,9 @@ class BashRunner:
                 cmd=rendered_cmd[:200],
             )
 
-            stdout, stderr, exit_code = await self._run_command(rendered_cmd)
+            stdout, stderr, exit_code = await self._run_command(
+                rendered_cmd, timeout
+            )
 
             logger.debug(
                 "bash_command_done",
@@ -120,11 +128,12 @@ class BashRunner:
             duration_ms=duration_ms,
         )
 
-    async def _run_command(self, cmd: str) -> tuple[str, str, int]:
+    async def _run_command(self, cmd: str, timeout: int) -> tuple[str, str, int]:
         """Run a single shell command with timeout.
 
         Args:
             cmd: The shell command string to execute.
+            timeout: Wall-clock timeout in seconds for this command.
 
         Returns:
             Tuple of (stdout, stderr, exit_code).
@@ -139,7 +148,7 @@ class BashRunner:
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
-                timeout=self._timeout,
+                timeout=timeout,
             )
 
             stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
@@ -157,9 +166,9 @@ class BashRunner:
             logger.error(
                 "bash_command_timeout",
                 cmd=cmd[:200],
-                timeout=self._timeout,
+                timeout=timeout,
             )
-            return "", f"Command timed out after {self._timeout}s", 124
+            return "", f"Command timed out after {timeout}s", 124
 
         except OSError as e:
             logger.error("bash_command_oserror", cmd=cmd[:200], error=str(e))

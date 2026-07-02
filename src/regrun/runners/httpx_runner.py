@@ -40,6 +40,9 @@ class HttpxRunner:
         headers = self._build_headers(test, variables)
         url = self._build_url(test)
 
+        # Per-test ``timeout`` (seconds) overrides the runner default when set.
+        timeout = test.timeout if test.timeout is not None else self._timeout
+
         logger.debug(
             "http_request",
             method=test.method,
@@ -50,7 +53,7 @@ class HttpxRunner:
 
         start = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.request(
                     method=test.method or "GET",
                     url=url,
@@ -77,9 +80,9 @@ class HttpxRunner:
 
         except httpx.TimeoutException as e:
             duration_ms = (time.monotonic() - start) * 1000
-            logger.error("http_timeout", url=url, timeout=self._timeout, error=str(e))
+            logger.error("http_timeout", url=url, timeout=timeout, error=str(e))
             return RunnerResponse(
-                error=f"Timeout after {self._timeout}s: {e}",
+                error=f"Timeout after {timeout}s: {e}",
                 duration_ms=duration_ms,
             )
         except httpx.HTTPError as e:
