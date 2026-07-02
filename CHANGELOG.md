@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-02
+
+### Added
+
+- **`any_contains` json_path operator.** The all-matches positive counterpart to `not_contains`: `"$.results[*].content_preview": { any_contains: "{{RUN_ID}}" }` passes when at least one value matched by the path contains the substring (`str(value)` tested with Python `in`, mirroring `contains`' substring semantics — but scanning **every** match instead of only `matches[0]`). Enables order-independent presence assertions on array paths where the target may not be rank 0 (ranking-fragile write-then-search probes). Opposite empty-set rule to `not_contains`: zero matches **fails** (a presence check against nothing means the target is absent), never a vacuous pass.
+
 ## [0.4.1] - 2026-06-21
 
 ### Internal
