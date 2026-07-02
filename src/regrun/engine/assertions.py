@@ -253,6 +253,19 @@ def _evaluate_single_json_path(
         match_values = [m.value for m in matches]
         return _check_not_contains(path, condition["not_contains"], match_values)
 
+    # any_contains is the ALL-MATCHES positive counterpart to not_contains: it
+    # scans EVERY matched value (not just matches[0], as ``contains`` does) and
+    # passes when at least one value's string form holds the substring. Use it
+    # for order-INDEPENDENT presence on an array path like
+    # ``$.results[*].metadata.entity_id`` where the target may not be rank 0
+    # (ranking-fragile writes-then-read probes). Like not_contains it is
+    # evaluated BEFORE the has_match guard, but with the OPPOSITE empty-set rule:
+    # a presence check against ZERO matches must FAIL (the target is absent), so
+    # an empty match set is a fail, never a vacuous pass.
+    if "any_contains" in condition:
+        match_values = [m.value for m in matches]
+        return _check_any_contains(path, condition["any_contains"], match_values)
+
     if not has_match:
         return AssertionResult(
             passed=False,
@@ -349,6 +362,31 @@ def _check_not_contains(path: str, expected: Any, values: list[Any]) -> Assertio
         expected=expected,
         actual=values,
         message=f"Value set {'does not contain' if passed else 'contains'} {expected!r} (n={len(values)})",
+    )
+
+
+def _check_any_contains(path: str, substring: Any, values: list[Any]) -> AssertionResult:
+    """Check that AT LEAST ONE matched value's string form holds ``substring``.
+
+    The all-matches positive counterpart of ``contains`` (which inspects only
+    ``matches[0]``). Scans every value produced by an array JSONPath (e.g.
+    ``$.results[*].content_preview``) and passes when any one contains the
+    substring — order-independent presence. Mirrors ``contains``' substring
+    (not equality) semantics: ``str(value)`` is tested with Python ``in``.
+    An EMPTY value set FAILS (a presence assertion against zero matches means
+    the target is absent), the opposite of ``not_contains``' vacuous pass.
+    """
+    needle = str(substring)
+    found = any(needle in str(v) for v in values)
+    return AssertionResult(
+        passed=found,
+        assertion_type=f"json_path({path}).any_contains",
+        expected=substring,
+        actual=values,
+        message=(
+            f"Value set {'contains' if found else 'does not contain'} "
+            f"{substring!r} in some element (n={len(values)})"
+        ),
     )
 
 
