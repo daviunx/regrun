@@ -96,6 +96,8 @@ groups:
       "$[0].status": { equals: "open" }
 ```
 
+`json_path` asserts (and captures) run against the **normalized** body — an envelope's `data` is hoisted to top level (never `$.data.*`), and a plain-string error body is exposed as `$._raw_text`. See README "Response normalization".
+
 ### bash
 
 ```yaml

@@ -458,6 +458,20 @@ Each entry under `json_path:` maps a JSONPath expression to one operator:
 
 Note: numeric operators (`gt`, `gte`, `lt`, `lte`) are the correct names. `greater_than`, `less_than`, `>=`, and `<=` are not valid.
 
+### Response normalization (fastmcp runner)
+
+Assertions and captures run against the **normalized** tool response body, not the raw MCP payload. Know the shape before writing `json_path`:
+
+| Raw shape | Normalized to | Assert against |
+|-----------|---------------|-----------------|
+| `{success, data: {...}}` (dict `data`) | `data` hoisted to top level; siblings (`hints`, `success`, `error_code`, ...) dropped | `$.<field>` — never `$.data.*` |
+| Any other dict | Unchanged (stays flat) | `$.<field>` as returned |
+| `is_error: true` with a plain-string body | Wrapped as `{is_error: true, _raw_text: "<text>"}` | `$._raw_text` with `contains` |
+
+Captures follow the same rule — a `capture:` path written against the pre-normalize shape (e.g. `$.data.id` when `data` gets hoisted) silently captures nothing instead of erroring.
+
+Source: `src/regrun/runners/mcp_response.py::_detect_and_normalize` (envelope hoist), `fastmcp_runner.py::_embed_is_error` (string-body wrap).
+
 ---
 
 ## Variable Capture
