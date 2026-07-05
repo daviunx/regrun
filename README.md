@@ -125,6 +125,8 @@ tests/regression/  •  2 tests
 
 **Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
 
+**Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run — in the failing file and every later file — while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts — the run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
+
 **Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file — for example `RUN_ID` defined in setup — is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
 
 **Layer concept:** Tests are organised into four layers, processed in this order:
@@ -154,8 +156,9 @@ regrun run TEST_DIR [OPTIONS]
 | `--dry-run` | flag | false | Print test plan without executing |
 | `--output` | `text\|json` | text | Output format |
 | `--verbose`, `-v` | flag | false | Log full request/response bodies |
-| `--fail-fast` | flag | false | Stop on first failure |
+| `--fail-fast` | flag | false | Stop on first failure (cleanup groups still run) |
 | `--skip-setup` | flag | false | Skip setup layer |
+| `--skip-cleanup` | flag | false | Skip cleanup-flagged groups (use when iterating; leaks must be swept later) |
 
 Examples:
 
@@ -171,6 +174,44 @@ regrun run tests/regression/ --group 1,3 --output json
 
 # Preview without running
 regrun run tests/regression/ --dry-run
+
+# Iterate on group 5 without running the sweep groups
+regrun run tests/regression/ --group 5 --skip-cleanup
+```
+
+### `regrun lint`
+
+Static analysis of a suite — no network, no execution. Encodes the regression-testing discipline (assertion strength, budget floors, sweep hygiene, the `auth: none` trap) as mechanical checks so violations surface at commit time instead of months later as flakes. Exit code is `1` if any **error** rule fires (`0` otherwise); `--strict` elevates warnings to errors.
+
+```
+regrun lint TARGET [OPTIONS]
+```
+
+`TARGET` is a directory path or a product name from `regrun.yaml`.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--strict` | flag | false | Treat warnings as errors |
+| `--budget-floor` | float | `75.0` | Minimum `eventually:` ceiling (seconds) before W003 fires |
+| `--allow-positional` | glob (repeatable) | — | File glob(s) where positional array asserts (W002) are permitted |
+
+| Rule | Sev | Meaning |
+|------|-----|---------|
+| E001 | error | Duplicate group id within a file |
+| E002 | error | mcp-layer file (`runner: fastmcp` / `default_auth: mcp`) sorts after a `*cleanup*` file (the shared api_key is revoked by cleanup) |
+| E003 | error | A test has `auth:` with a null value (the `auth: none` string-literal trap) |
+| W001 | warn | MCP tool test asserts `is_error` with no `json_path` on the response |
+| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`) — rank-0 fragile. Suppress per-test with an inline `# lint: allow-positional` comment, or per-file with `--allow-positional` |
+| W003 | warn | `eventually:` worst-case ceiling below the budget floor (default 75s) |
+| W004 | warn | POST/create-shaped test whose body/args carry no `{{RUN_ID}}`/`{{timestamp}}` (4xx-asserting negative tests are skipped) |
+| W005 | warn | Cleanup-flagged group references a variable captured in another group (capture-dependent sweep) |
+
+```bash
+# Lint before committing suite changes
+regrun lint tests/regression/
+
+# CI gate: fail on any warning too
+regrun lint tests/regression/ --strict
 ```
 
 ---
@@ -244,7 +285,14 @@ groups:
     priority: medium
     tests:
       - ...
+  - id: 3
+    name: "Environment Sweep"
+    cleanup: true           # survives filters; runs even on --fail-fast abort (default: false)
+    tests:
+      - ...
 ```
+
+`cleanup: true` marks a group as a teardown/sweep that must run even on filtered or aborted runs (see *Cleanup dependency* above). Reserve it for capture-independent, pattern-based sweeps only — `regrun lint` flags (W005) a cleanup group that depends on variables captured elsewhere.
 
 ### Test fields by runner
 

@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import sys
-import time
 from pathlib import Path
 
 import click
@@ -11,15 +10,10 @@ import structlog
 import yaml
 
 from regrun.config import settings
-from regrun.engine.assertions import evaluate_assertions
-from regrun.engine.reporter import RunResult, TestResult, format_json, format_text
-from regrun.engine.retry import resolve_response_and_results
-from regrun.engine.variables import VariableStore, capture_from_response, render_test
-from regrun.models import Test, TestFile
-from regrun.runners.bash_runner import BashRunner
-from regrun.runners.fastmcp_runner import FastMcpRunner
-from regrun.runners.httpx_runner import HttpxRunner
-from regrun.runners.websocket_runner import WebSocketRunner
+from regrun.engine import executor
+from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
+from regrun.engine.reporter import format_json, format_text
+from regrun.models import Group, TestFile
 
 logger = structlog.get_logger()
 
@@ -137,94 +131,29 @@ def _filter_groups(
     test_file: TestFile,
     group_ids: list[int] | None,
     priority: str | None,
+    skip_cleanup: bool = False,
 ) -> TestFile:
-    """Filter test file groups by group IDs and/or priority."""
+    """Filter test file groups by group IDs and/or priority.
+
+    Cleanup-flagged groups (``cleanup: true``) are exempt from filtering — they
+    are always retained, mirroring the setup-always guarantee, so filtered
+    iteration runs still sweep the environment. ``--skip-cleanup`` removes that
+    exemption: cleanup groups are then subject to the normal filters (and dropped
+    when they don't match), which is how a developer iterates without a sweep.
+    """
     groups = test_file.groups
 
-    if group_ids:
-        groups = [g for g in groups if g.id in group_ids]
+    def _matches(g: Group) -> bool:
+        if group_ids and g.id not in group_ids:
+            return False
+        if priority and g.priority != priority:
+            return False
+        return True
 
-    if priority:
-        groups = [g for g in groups if g.priority == priority]
+    if group_ids or priority:
+        groups = [g for g in groups if _matches(g) or (g.cleanup and not skip_cleanup)]
 
     return test_file.model_copy(update={"groups": groups})
-
-
-def _create_runner_for_type(
-    runner_type: str,
-    test_file: TestFile,
-) -> HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner | None:
-    """Create a runner instance for the given runner type."""
-    if runner_type == "httpx":
-        endpoint = test_file.meta.endpoint
-        if not endpoint:
-            logger.error("missing_endpoint", runner=runner_type)
-            return None
-        return HttpxRunner(
-            base_url=endpoint,
-            auth_configs=test_file.auth,
-            timeout=settings.timeout,
-            default_auth=test_file.meta.default_auth,
-        )
-
-    if runner_type == "fastmcp":
-        endpoint = test_file.meta.mcp_endpoint or test_file.meta.endpoint
-        if not endpoint:
-            logger.error("missing_endpoint", runner=runner_type)
-            return None
-        return FastMcpRunner(
-            server_url=endpoint,
-            auth_configs=test_file.auth,
-            timeout=settings.mcp_timeout,
-            default_auth=test_file.meta.default_auth,
-        )
-
-    if runner_type == "bash":
-        # Use the current working directory as the cwd for bash commands.
-        # This is where regrun was invoked from.
-        cwd = str(Path.cwd())
-        return BashRunner(cwd=cwd, timeout=settings.timeout)
-
-    if runner_type == "websocket":
-        return WebSocketRunner(
-            auth_configs=test_file.auth,
-            timeout=settings.ws_timeout,
-            default_auth=test_file.meta.default_auth,
-        )
-
-    logger.warning("unsupported_runner", runner=runner_type)
-    return None
-
-
-def _get_runner_for_test(
-    test: Test,
-    test_file: TestFile,
-    runner_cache: dict[str, HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner],
-) -> HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner | None:
-    """Get the runner for a test, respecting per-test runner overrides."""
-    runner_type = test.runner or test_file.meta.runner
-    if runner_type not in runner_cache:
-        runner = _create_runner_for_type(runner_type, test_file)
-        if runner is not None:
-            runner_cache[runner_type] = runner
-        else:
-            return None
-    return runner_cache[runner_type]
-
-
-async def _close_runners(
-    runner_cache: dict[str, HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner],
-) -> None:
-    """Close any runners holding persistent connections (e.g. the in-process
-    fastmcp client). Best-effort: a close failure must not fail the run."""
-    for runner in runner_cache.values():
-        aclose = getattr(runner, "aclose", None)
-        if aclose is None:
-            continue
-        try:
-            await aclose()
-        except Exception as exc:  # noqa: BLE001 - cleanup must not mask results
-            logger.warning("runner_close_failed", error=str(exc))
 
 
 def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
@@ -255,190 +184,6 @@ def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
 
     click.echo(f"\n  Total: {total_tests} tests")
     click.echo("")
-
-
-async def _run_tests(
-    yaml_files: list[Path],
-    test_files: list[TestFile],
-    fail_fast: bool,
-    verbose: bool,
-) -> RunResult:
-    """Execute all tests across all files and collect results."""
-    store = VariableStore()
-    all_results: list[TestResult] = []
-    run_start = time.monotonic()
-    aborted = False
-
-    product = test_files[0].meta.product if test_files else "unknown"
-    layer = test_files[0].meta.layer if len(test_files) == 1 else None
-
-    # Load env_file from any file's meta (typically the setup file).
-    # Path is relative to the test file's directory.
-    for path, tf in zip(yaml_files, test_files):
-        if tf.meta.env_file:
-            env_path = path.parent / tf.meta.env_file
-            if env_path.is_file():
-                store.load_env_file(str(env_path))
-            else:
-                logger.warning("env_file_not_found", path=str(env_path))
-            break
-
-    for path, test_file in zip(yaml_files, test_files):
-        if aborted:
-            break
-
-        logger.info("processing_file", file=path.name, layer=test_file.meta.layer)
-
-        # Merge file-level variables (pre-render so {{timestamp}} etc. resolve).
-        # Skip variables already set by a previous file or runtime capture to
-        # keep identifiers like RUN_ID consistent across the entire run.
-        new_vars = {
-            k: store.render_string(v)
-            for k, v in test_file.variables.items()
-            if store.get(k) is None
-        }
-        store.merge(new_vars)
-
-        # Cache runners per type to reuse within a file
-        runner_cache: dict[str, HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner] = {}
-
-        for group in test_file.groups:
-            if aborted:
-                break
-
-            logger.info("running_group", group_id=group.id, group_name=group.name)
-
-            for test in group.tests:
-                if aborted:
-                    all_results.append(
-                        TestResult(
-                            test_id=test.id,
-                            test_name=test.name,
-                            group_name=group.name,
-                            passed=False,
-                            skipped=True,
-                        )
-                    )
-                    continue
-
-                runner = _get_runner_for_test(test, test_file, runner_cache)
-                if runner is None:
-                    effective_type = test.runner or test_file.meta.runner
-                    all_results.append(
-                        TestResult(
-                            test_id=test.id,
-                            test_name=test.name,
-                            group_name=group.name,
-                            passed=False,
-                            error=f"Unsupported runner: {effective_type}",
-                        )
-                    )
-                    continue
-
-                result = await _execute_single_test(
-                    test=test,
-                    group_name=group.name,
-                    runner=runner,
-                    store=store,
-                    verbose=verbose,
-                )
-                all_results.append(result)
-
-                if fail_fast and not result.passed and not result.skipped:
-                    logger.warning("fail_fast_triggered", test_id=test.id)
-                    aborted = True
-
-        # Close persistent runner sessions opened for this file (e.g. the
-        # in-process fastmcp client). Runs after the groups loop — including on
-        # fail-fast abort — before moving to the next file.
-        await _close_runners(runner_cache)
-
-    run_duration = (time.monotonic() - run_start) * 1000
-
-    return RunResult(
-        product=product,
-        layer=layer,
-        total=len(all_results),
-        passed=sum(1 for r in all_results if r.passed),
-        failed=sum(1 for r in all_results if not r.passed and not r.skipped and not r.error),
-        skipped=sum(1 for r in all_results if r.skipped),
-        errors=sum(1 for r in all_results if r.error),
-        duration_ms=run_duration,
-        test_results=all_results,
-    )
-
-
-async def _execute_single_test(
-    test: Test,
-    group_name: str,
-    runner: HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner,
-    store: VariableStore,
-    verbose: bool,
-) -> TestResult:
-    """Execute a single test: render, run, capture, assert."""
-    test_start = time.monotonic()
-
-    try:
-        # Render template variables
-        rendered_test = render_test(test, store)
-
-        # Execute via runner; an `eventually:` block retries execute+assert.
-        response, results = await resolve_response_and_results(rendered_test, runner, store)
-        duration_ms = (time.monotonic() - test_start) * 1000
-
-        if verbose:
-            logger.info(
-                "test_detail",
-                test_id=test.id,
-                status_code=response.status_code,
-                body=str(response.body)[:500] if response.body else None,
-            )
-
-        # Check for runner-level error (eventually path reports via assertions)
-        if response.error and results is None:
-            return TestResult(
-                test_id=test.id,
-                test_name=test.name,
-                group_name=group_name,
-                passed=False,
-                error=response.error,
-                duration_ms=duration_ms,
-            )
-
-        # Capture variables from response
-        if rendered_test.capture and response.body:
-            captured = capture_from_response(rendered_test.capture, response.body)
-            store.merge(captured)
-
-        # Evaluate assertions (eventually path already ran them in the retry loop)
-        assertion_results = results or evaluate_assertions(
-            rendered_test.assert_,
-            response.status_code,
-            response.body,
-        )
-
-        all_passed = all(ar.passed for ar in assertion_results)
-
-        return TestResult(
-            test_id=test.id,
-            test_name=test.name,
-            group_name=group_name,
-            passed=all_passed,
-            duration_ms=duration_ms,
-            assertion_results=assertion_results,
-        )
-
-    except Exception as e:
-        duration_ms = (time.monotonic() - test_start) * 1000
-        logger.error("test_execution_error", test_id=test.id, error=str(e))
-        return TestResult(
-            test_id=test.id,
-            test_name=test.name,
-            group_name=group_name,
-            passed=False,
-            error=str(e),
-            duration_ms=duration_ms,
-        )
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -497,6 +242,12 @@ def cli() -> None:
     default=False,
     help="Skip setup layer (use when variables are already populated)",
 )
+@click.option(
+    "--skip-cleanup",
+    is_flag=True,
+    default=False,
+    help="Skip cleanup-flagged groups (use when iterating; leaks must be swept later)",
+)
 def run(
     target: str,
     layer: str | None,
@@ -507,6 +258,7 @@ def run(
     verbose: bool,
     fail_fast: bool,
     skip_setup: bool,
+    skip_cleanup: bool,
 ) -> None:
     """Run regression tests.
 
@@ -542,7 +294,7 @@ def run(
             # filters rarely match its groups, which would drop captured variables.
             # Only filter setup when it is the explicit target (--layer setup).
             if not (tf.meta.layer == "setup" and layer != "setup"):
-                tf = _filter_groups(tf, group_ids, priority)
+                tf = _filter_groups(tf, group_ids, priority, skip_cleanup)
             if tf.groups:
                 matched_paths.append(path)
                 test_files.append(tf)
@@ -566,7 +318,9 @@ def run(
         return
 
     # Execute tests
-    run_result = asyncio.run(_run_tests(matched_paths, test_files, fail_fast, verbose))
+    run_result = asyncio.run(
+        executor.run_tests(matched_paths, test_files, fail_fast, verbose, skip_cleanup)
+    )
 
     # Output results
     if output_format == "json":
@@ -600,6 +354,37 @@ def list_products() -> None:
         else:
             click.echo(f"  {name:<20} {rel_path}  (not found)")
     click.echo("")
+
+
+@cli.command()
+@click.argument("target")
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Treat warnings as errors (exit 1 on any finding)",
+)
+@click.option(
+    "--budget-floor",
+    type=float,
+    default=75.0,
+    help="Minimum eventually: ceiling in seconds before W003 fires (default 75)",
+)
+@click.option(
+    "--allow-positional",
+    "allow_positional",
+    multiple=True,
+    help="File glob(s) where positional array asserts (W002) are permitted",
+)
+def lint(target: str, strict: bool, budget_floor: float, allow_positional: tuple[str, ...]) -> None:
+    """Statically lint a YAML regression suite (no network, no execution).
+
+    TARGET is a directory path or a product name from regrun.yaml.
+    """
+    test_path = _resolve_target(target)
+    findings = lint_directory(test_path, budget_floor, allow_positional)
+    click.echo(format_lint_report(findings, strict))
+    sys.exit(lint_exit_code(findings, strict))
 
 
 if __name__ == "__main__":

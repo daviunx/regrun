@@ -257,6 +257,12 @@ Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`
 
 - **`--group` and `--priority` do not filter auto-included setup files** — when setup runs as a dependency (you did not pass `--layer setup`), it runs in full. Filters apply to setup only when explicitly targeted via `--layer setup`. `--skip-setup` still excludes setup entirely.
 
+- **`cleanup: true` groups are the teardown mirror of setup** — a cleanup-flagged group survives `--group`/`--priority` filters AND still runs when `--fail-fast` aborts (in the failing file and later files), so filtered/aborted iteration runs still sweep the environment. The run's exit code still reflects the original failure. `--skip-cleanup` suppresses them. **Only flag capture-independent, pattern-based sweeps** (`slug LIKE 'regr-%'` + OpenSearch `_delete_by_query`) — never capture-dependent tail deletes (those false-red in filtered runs; the next run's start-of-run sweep covers their leaks). `regrun lint` W005 flags a cleanup group that references a variable captured elsewhere.
+
+- **Sweep-first, not cleanup-last** — within-run cleanup can never be guaranteed (SIGKILL / crashed run defeats any teardown). The only guaranteed cleanup is the pattern-based sweep at the START of the next run. Every suite must open (in `00_setup`, after auth) with a self-healing sweep that deletes all prior-run artifacts of every fixture family, across BOTH Postgres and OpenSearch, followed by a preflight group asserting zero leftovers + quota headroom.
+
+- **Budget floor ≥75s** — indexing/async `eventually:` poll ceilings must be ≥75s under load. `regrun lint` W003 flags under-budgeted polls (ceiling = `initial_delay + interval·Σ backoff^k`, k=0..max_attempts-2).
+
 ---
 
 ## Running Tests
@@ -288,7 +294,36 @@ regrun run tests/regression/ --output json
 
 # Skip setup (variables already populated from a prior run)
 regrun run tests/regression/ --layer mcp --skip-setup
+
+# Iterate on one group without running the sweep/cleanup groups
+regrun run tests/regression/ --group 5 --skip-cleanup
 ```
+
+## Linting a Suite
+
+Static analysis — no network, no execution. Run before committing suite changes.
+
+```bash
+# Lint (exit 1 on any error rule)
+regrun lint tests/regression/
+
+# Fail on warnings too
+regrun lint tests/regression/ --strict
+
+# Raise/lower the eventually: budget floor, allow positional asserts in a file
+regrun lint tests/regression/ --budget-floor 90 --allow-positional '06_*.yaml'
+```
+
+| Rule | Sev | Meaning |
+|------|-----|---------|
+| E001 | error | Duplicate group id within a file |
+| E002 | error | mcp-layer file sorts after a `*cleanup*` file (shared api_key revoked) |
+| E003 | error | Test has `auth:` with a null value (the `auth: none` trap) |
+| W001 | warn | MCP tool test asserts `is_error` with no `json_path` |
+| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`) — suppress with inline `# lint: allow-positional` or `--allow-positional GLOB` |
+| W003 | warn | `eventually:` ceiling below the budget floor (default 75s) |
+| W004 | warn | POST/create-shaped test with no `{{RUN_ID}}`/`{{timestamp}}` (4xx tests skipped) |
+| W005 | warn | Cleanup-flagged group references a variable captured in another group |
 
 **CI endpoint overrides** (override `meta.endpoint` / `meta.mcp_endpoint` for all files):
 

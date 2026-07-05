@@ -131,6 +131,12 @@ class Group(BaseModel):
     id: int
     priority: Literal["high", "medium", "low"] = "medium"
     context: Literal["prod", "fresh", "both"] = "prod"
+    # Sweep-first cleanup discipline: a cleanup-flagged group survives
+    # --group/--priority filtering (like the setup layer) and still EXECUTES
+    # when --fail-fast aborts the run, so the environment is swept even on
+    # partial/aborted runs. Only capture-INDEPENDENT pattern sweeps may be
+    # flagged (see testing/regression.md). Suppress with --skip-cleanup.
+    cleanup: bool = False
     tests: list[Test]
 
 

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-05
+
+### Added
+
+- **`cleanup: true` group flag + cleanup-always guarantee.** The teardown mirror of the setup-always guarantee. A group flagged `cleanup: true` survives `--group` / `--priority` filtering (so filtered iteration runs still sweep the environment) and still **executes** when `--fail-fast` aborts the run — in the failing file AND in every later file — while all other remaining tests are marked skipped. The run's exit code still reflects the original failure. The new `--skip-cleanup` flag (mirror of `--skip-setup`) suppresses both behaviours for local iteration. Rationale: within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), so the durable pattern is a capture-independent, pattern-based sweep at the START of the next run — and only such sweeps should be flagged. The group-execution loop moved to a new `engine/executor.py` to keep `cli.py` under the size limit.
+- **`regrun lint TARGET` command.** Static analysis of a suite — no network, no execution — that encodes the regression-testing discipline as mechanical checks so violations surface at commit time instead of months later as flakes. Errors (exit 1): duplicate group ids within a file (E001), an mcp-layer file sorting after a `*cleanup*` file (E002, the shared-api_key-revoked ordering trap), a null `auth:` value (E003, the `auth: none` string-literal trap). Warnings: `is_error`-only MCP asserts (W001), positional array `equals`/`contains` (W002, suppressible with an inline `# lint: allow-positional` comment or `--allow-positional GLOB`), under-budgeted `eventually:` polls below a `--budget-floor` (W003, default 75s, computed with the real retry formula), create-shaped tests missing `{{RUN_ID}}`/`{{timestamp}}` (W004), and capture-dependent cleanup groups (W005). `--strict` elevates warnings to errors. Rules live in `engine/linter.py`.
+
 ## [0.4.2] - 2026-07-02
 
 ### Added
