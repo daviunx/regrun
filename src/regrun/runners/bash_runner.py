@@ -68,9 +68,7 @@ class BashRunner:
                 cmd=rendered_cmd[:200],
             )
 
-            stdout, stderr, exit_code = await self._run_command(
-                rendered_cmd, timeout
-            )
+            stdout, stderr, exit_code = await self._run_command(rendered_cmd, timeout)
 
             logger.debug(
                 "bash_command_done",
