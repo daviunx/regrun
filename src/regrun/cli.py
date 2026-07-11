@@ -322,14 +322,21 @@ def run(
         executor.run_tests(matched_paths, test_files, fail_fast, verbose, skip_cleanup)
     )
 
-    # Build both reports, persist them (every run -- pass, fail, or abort), then
-    # emit the requested format followed by the pointer line agents parse.
+    # Emit the results FIRST and unconditionally -- showing the run is the whole
+    # point; artifact persistence is a best-effort side channel that must never
+    # suppress it.
     text_report = format_text(run_result)
     json_report = format_json(run_result)
-    run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report)
-
     click.echo(json_report if output_format == "json" else text_report)
-    click.echo(artifacts.pointer_line(run_dir))
+
+    # Persist the full report to disk (every run -- pass, fail, or abort). A
+    # write failure (unwritable REGRUN_RUNS_DIR, disk full, bad product name) is
+    # surfaced as a warning on stderr and never changes the exit code.
+    try:
+        run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report)
+        click.echo(artifacts.pointer_line(run_dir))
+    except OSError as e:
+        click.echo(f"Warning: could not persist run artifacts: {e}", err=True)
 
     # Exit with non-zero if any failures
     if run_result.failed > 0 or run_result.errors > 0:

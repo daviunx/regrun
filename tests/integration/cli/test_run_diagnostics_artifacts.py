@@ -134,6 +134,36 @@ def test_stdout_ends_with_pointer_line(tmp_path, monkeypatch) -> None:
     assert Path(m.group("txt")).is_file()
 
 
+def test_artifact_write_failure_does_not_suppress_results(tmp_path, monkeypatch) -> None:
+    """An unwritable REGRUN_RUNS_DIR must NOT swallow the run: full results +
+    Failures section still print, the exit code is the run's own, and the write
+    failure is surfaced as a stderr warning (not a traceback)."""
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    _failing_suite(suite)
+
+    # Point REGRUN_RUNS_DIR at a FILE -- mkdir(parents=True) under it raises
+    # OSError (the parent is not a directory).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setenv("REGRUN_RUNS_DIR", str(blocker))
+
+    result = CliRunner().invoke(cli, ["run", str(suite)])
+
+    # The run's own outcome is preserved (failing suite -> exit 1), NOT masked
+    # by the artifact-write failure.
+    assert result.exit_code == 1, result.output
+
+    # Full results + the Failures section still reached stdout.
+    assert "D.1" in result.output
+    assert "Failures" in result.output
+    assert "Result: FAIL" in result.output
+
+    # The write failure is a stderr warning, and no pointer line was printed.
+    assert "could not persist run artifacts" in result.stderr
+    assert "Full report:" not in result.output
+
+
 def test_eventually_exhaustion_records_max_attempts(tmp_path, monkeypatch) -> None:
     suite = tmp_path / "suite"
     suite.mkdir()
