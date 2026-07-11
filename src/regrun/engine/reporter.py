@@ -3,6 +3,23 @@
 from pydantic import BaseModel, Field
 
 from regrun.engine.assertions import AssertionResult
+from regrun.runners.base import RequestEcho
+
+
+class FailureDiagnostics(BaseModel):
+    """Everything needed to understand a failure from a single run.
+
+    Populated only when a test did not pass (see
+    ``regrun.engine.diagnostics.build_failure_diagnostics``). Secrets are already
+    redacted / scrubbed and the response body already truncated by the builder,
+    so this object is safe to render and serialize as-is.
+    """
+
+    request: RequestEcho | None = None
+    response_status: int | None = None
+    response_body: str | None = None
+    failed_assertions: list[AssertionResult] = Field(default_factory=list)
+    attempts: int = 1
 
 
 class TestResult(BaseModel):
@@ -16,6 +33,7 @@ class TestResult(BaseModel):
     error: str | None = None
     duration_ms: float = 0.0
     assertion_results: list[AssertionResult] = Field(default_factory=list)
+    diagnostics: FailureDiagnostics | None = None
 
 
 class RunResult(BaseModel):
@@ -86,6 +104,11 @@ def format_text(run_result: RunResult) -> str:
             f"  {tr.test_id:<{id_width}}  {name_display:<{name_width}}  {status:<8}  {time_str:>8}  {details}"
         )
 
+    # Failures section: rendered BETWEEN the table and the summary so a
+    # tail-clipped terminal still shows the diagnostics, while "Result:" stays
+    # the last line for tooling that parses it.
+    lines.extend(_failures_section(run_result))
+
     # Summary
     lines.append("")
     lines.append("-" * 60)
@@ -115,7 +138,65 @@ def format_json(run_result: RunResult) -> str:
     Returns:
         JSON string of the run result.
     """
-    return run_result.model_dump_json(indent=2)
+    return run_result.model_dump_json(indent=2, exclude_none=True)
+
+
+def _failures_section(run_result: RunResult) -> list[str]:
+    """Render per-failure diagnostics for every test carrying a diagnostics block.
+
+    Returns an empty list when no test failed (so all-pass runs stay terse).
+    """
+    failing = [tr for tr in run_result.test_results if tr.diagnostics is not None]
+    if not failing:
+        return []
+
+    lines: list[str] = ["", "", f"Failures ({len(failing)})", "=" * 60]
+    for tr in failing:
+        lines.extend(_one_failure(tr))
+    return lines
+
+
+def _one_failure(tr: TestResult) -> list[str]:
+    """Render a single failed test's diagnostics block (full length)."""
+    diag = tr.diagnostics
+    lines: list[str] = ["", f"[{tr.group_name}] {tr.test_id}  {tr.test_name}"]
+
+    if tr.error:
+        lines.append(f"  error: {tr.error}")
+
+    if diag is None:
+        return lines
+
+    req = diag.request
+    if req is not None:
+        if req.method or req.url:
+            lines.append(f"  request: {req.method or ''} {req.url or ''}".rstrip())
+        if req.tool:
+            lines.append(f"  tool: {req.tool}  args: {req.args}")
+        if req.commands:
+            for cmd in req.commands:
+                lines.append(f"  $ {cmd}")
+        if req.headers:
+            lines.append(f"  headers: {req.headers}")
+        if req.body is not None:
+            lines.append(f"  body: {req.body}")
+        if req.send is not None:
+            lines.append(f"  send: {req.send}  wait_for: {req.wait_for}")
+
+    if diag.response_status is not None:
+        lines.append(f"  response status: {diag.response_status}")
+    if diag.response_body is not None:
+        lines.append(f"  response body: {diag.response_body}")
+
+    for ar in diag.failed_assertions:
+        lines.append(f"  ✗ {ar.assertion_type}: {ar.message}")
+        lines.append(f"      expected: {ar.expected}")
+        lines.append(f"      actual:   {ar.actual}")
+
+    if diag.attempts > 1:
+        lines.append(f"  attempts: {diag.attempts}")
+
+    return lines
 
 
 def _status_label(tr: TestResult) -> str:

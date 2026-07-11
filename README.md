@@ -119,6 +119,38 @@ tests/regression/  •  2 tests
 
 ---
 
+## Failure Diagnostics & Run Artifacts
+
+**One run tells you everything about a failure — by default.** No flag needed. When a test fails or errors, regrun renders a `Failures` section between the results table and the summary, so `Result: PASS|FAIL` stays the last line while a tail-clipped terminal still shows the diagnostics:
+
+```
+Failures (1)
+============================================================
+
+[Tools] A9.1  List tools
+  request: GET http://api:8000/tools
+  headers: {'Authorization': '[REDACTED]', 'Content-Type': 'application/json'}
+  response status: 500
+  response body: {"detail": "RecursionError: maximum recursion depth exceeded"}
+  ✗ status: Status 500 != 200
+      expected: 200
+      actual:   500
+
+------------------------------------------------------------
+  Total: 1  Passed: 0  Failed: 1  ...
+  Result: FAIL
+
+Full report: /Users/you/.regrun/runs/myproduct/20260711-161301/report.txt (json: report.json)
+```
+
+Each failed test's diagnostics carries the **request echo** (method/URL/headers/body for httpx, tool+args for MCP, the rendered command list for bash, url/send/wait_for for WebSocket), the **response** status + body, **every** failed assertion at full length (not truncated), and the `eventually` **attempt count**. Passing tests stay terse. `--output json` includes `diagnostics` as an additive field (omitted when null).
+
+**Redaction:** request headers are redacted at capture time by canonical sensitive-field patterns (`authorization`, `*token*`, `*key*`, `cookie`, …), and any resolved auth-token value is scrubbed wherever it appears (including a token echoed back in a response body). Response bodies are truncated to 2000 chars (see `REGRUN_DIAG_BODY_LIMIT`) with a `…[truncated, N total chars]` annotation.
+
+**Persistent artifacts:** *every* run — pass, fail, or `--fail-fast` abort — writes the full `report.txt` + `report.json` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with the pointer line above. An AI agent (or a human) reads the file instead of re-running a multi-minute suite to see a truncated error. Timestamped dirs are never auto-pruned (plain text, negligible size).
+
+---
+
 ## How It Works (Execution Model)
 
 **File ordering:** The setup layer always runs first. All other files run alphabetically by filename. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order.
@@ -701,6 +733,8 @@ regrun run tests/regression/
 | `REGRUN_VERBOSE` | `false` | Log full request/response bodies |
 | `REGRUN_API_ENDPOINT` | — | Override `meta.endpoint` globally (for CI) |
 | `REGRUN_MCP_ENDPOINT` | — | Override `meta.mcp_endpoint` globally (for CI) |
+| `REGRUN_RUNS_DIR` | `~/.regrun/runs` | Base dir for persisted `report.txt` + `report.json` artifacts |
+| `REGRUN_DIAG_BODY_LIMIT` | `2000` | Max response-body chars kept in failure diagnostics |
 
 ---
 

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-11
+
+### Added
+
+- **Full failure diagnostics by default — one run tells you everything about a failure.** A failing test used to emit a single truncated line (`Status 500 != 200`), forcing a second `--verbose` run (bodies for *every* test) plus manual log archaeology to find the actual cause. Now every failed/errored test carries a `FailureDiagnostics` block — the request echo (method/URL/redacted headers/body, or tool+args, or the rendered bash commands, or ws url/send/wait_for), the response status + body, **all** failed assertions at full length (no 60-char cut), and the `eventually` attempt count — populated automatically. Passing tests stay terse (no diagnostics). A new **`Failures` section** renders between the results table and the summary, so `Result: PASS|FAIL` stays the last line (existing tooling parses it) while a tail-clipped terminal now shows the diagnostics. `--output json` carries `diagnostics` as an additive field (omitted entirely when null); `--verbose` is unchanged.
+- **Persistent run artifacts.** Every run — pass, fail, or `--fail-fast` abort — writes the complete `report.txt` + `report.json` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with a parseable pointer line `Full report: <path>/report.txt (json: report.json)`. AI agents (and humans) read the file instead of re-running a multi-minute suite to see a truncated error. Logic lives in `engine/artifacts.py`; the diagnostics builder + redaction/truncation helpers in `engine/diagnostics.py`.
+- **Secret redaction in diagnostics.** Request headers are redacted at capture time by the canonical `SENSITIVE_PATTERNS` field-name set (observability standard §4 — `authorization`, `*token*`, `*key*`, `cookie`, …), and any resolved auth-token value is scrubbed wherever it appears (e.g. echoed back in a response body). Response bodies are truncated to 2000 chars (`REGRUN_DIAG_BODY_LIMIT` override) with a `…[truncated, N total chars]` annotation. Resolved token values ride an `exclude=True` field and never reach any serialized output.
+
 ## [0.5.0] - 2026-07-05
 
 ### Added

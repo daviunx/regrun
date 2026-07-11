@@ -16,7 +16,7 @@ from fastmcp import Client
 
 from regrun.engine.variables import VariableStore
 from regrun.models import AuthConfig, Test
-from regrun.runners.base import RunnerResponse
+from regrun.runners.base import RequestEcho, RunnerResponse
 from regrun.runners.mcp_response import normalize_call_tool_result
 
 logger = structlog.get_logger()
@@ -56,9 +56,14 @@ class FastMcpRunner:
             embedded in the body dict for assertion evaluation.
         """
         if not test.tool:
-            return RunnerResponse(error="MCP test missing 'tool' field")
+            return RunnerResponse(
+                error="MCP test missing 'tool' field",
+                request_echo=RequestEcho(runner="fastmcp", args=test.args),
+            )
 
         auth_key = self._resolve_auth_key(test, variables, self._default_auth)
+        request_echo = RequestEcho(runner="fastmcp", tool=test.tool, args=test.args)
+        secret_values = [auth_key] if auth_key else []
 
         # Per-test ``timeout`` (seconds) overrides the runner default when set.
         # This bounds the outer ``wait_for``, which is the effective ceiling on
@@ -86,6 +91,8 @@ class FastMcpRunner:
             return RunnerResponse(
                 error=f"MCP call timed out after {timeout}s",
                 duration_ms=duration_ms,
+                request_echo=request_echo,
+                secret_values=secret_values,
             )
         except Exception as exc:
             # Transport / connection / client-side validation error. Surface as a
@@ -97,6 +104,8 @@ class FastMcpRunner:
                 status_code=None,
                 body={"is_error": True, "error": str(exc)},
                 duration_ms=duration_ms,
+                request_echo=request_echo,
+                secret_values=secret_values,
             )
 
         duration_ms = (time.monotonic() - start) * 1000
@@ -115,7 +124,13 @@ class FastMcpRunner:
             body_type=type(body).__name__,
         )
 
-        return RunnerResponse(status_code=None, body=body, duration_ms=duration_ms)
+        return RunnerResponse(
+            status_code=None,
+            body=body,
+            duration_ms=duration_ms,
+            request_echo=request_echo,
+            secret_values=secret_values,
+        )
 
     async def _call_tool(self, auth_key: str | None, test: Test):
         """Resolve/open the client for this auth context and call the tool.

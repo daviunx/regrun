@@ -5,9 +5,10 @@ import time
 import httpx
 import structlog
 
+from regrun.engine.diagnostics import redact_headers
 from regrun.engine.variables import VariableStore
 from regrun.models import AuthConfig, Test
-from regrun.runners.base import RunnerResponse
+from regrun.runners.base import RequestEcho, RunnerResponse
 
 logger = structlog.get_logger()
 
@@ -39,6 +40,17 @@ class HttpxRunner:
         """
         headers = self._build_headers(test, variables)
         url = self._build_url(test)
+
+        # Capture what we send, with auth headers redacted at capture time.
+        request_echo = RequestEcho(
+            runner="httpx",
+            method=test.method or "GET",
+            url=url,
+            headers=redact_headers(headers),
+            body=test.body,
+            query_params=test.query_params,
+        )
+        secret_values = self._resolve_secret_values(test, variables)
 
         # Per-test ``timeout`` (seconds) overrides the runner default when set.
         timeout = test.timeout if test.timeout is not None else self._timeout
@@ -76,6 +88,8 @@ class HttpxRunner:
                 status_code=response.status_code,
                 body=body,
                 duration_ms=duration_ms,
+                request_echo=request_echo,
+                secret_values=secret_values,
             )
 
         except httpx.TimeoutException as e:
@@ -84,6 +98,8 @@ class HttpxRunner:
             return RunnerResponse(
                 error=f"Timeout after {timeout}s: {e}",
                 duration_ms=duration_ms,
+                request_echo=request_echo,
+                secret_values=secret_values,
             )
         except httpx.HTTPError as e:
             duration_ms = (time.monotonic() - start) * 1000
@@ -91,6 +107,8 @@ class HttpxRunner:
             return RunnerResponse(
                 error=f"HTTP error: {e}",
                 duration_ms=duration_ms,
+                request_echo=request_echo,
+                secret_values=secret_values,
             )
 
     def _build_headers(self, test: Test, variables: VariableStore) -> dict[str, str]:
@@ -120,6 +138,21 @@ class HttpxRunner:
                 logger.warning("auth_config_missing", auth_name=auth_name)
 
         return headers
+
+    def _resolve_secret_values(self, test: Test, variables: VariableStore) -> list[str]:
+        """Resolve the auth-token value(s) for this test, for body scrubbing.
+
+        Never rendered anywhere -- carried on ``RunnerResponse.secret_values`` so
+        the diagnostics builder can strip a token echoed back in a response body.
+        """
+        auth_name = test.auth or self._default_auth
+        if not auth_name or auth_name == "none":
+            return []
+        auth_config = self._auth_configs.get(auth_name)
+        if not auth_config:
+            return []
+        token = variables.render_string(auth_config.token)
+        return [token] if token else []
 
     def _build_url(self, test: Test) -> str:
         """Build the full URL from base URL and test path."""

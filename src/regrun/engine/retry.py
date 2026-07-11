@@ -120,7 +120,7 @@ async def resolve_response_and_results(
     test: "Test",
     runner: RunnerProtocol,
     store: VariableStore,
-) -> tuple[RunnerResponse, list[AssertionResult] | None]:
+) -> tuple[RunnerResponse, list[AssertionResult] | None, int]:
     """Run a test once, or retry it when it declares an ``eventually`` block.
 
     This is the single composition point the CLI coordinator calls for both the
@@ -139,17 +139,25 @@ async def resolve_response_and_results(
         store: The variable store (passed through to the runner).
 
     Returns:
-        ``(response, results)`` where ``results`` is the list of assertion
-        results for an ``eventually`` test, or ``None`` for a single-attempt
-        test.
+        ``(response, results, attempts)`` where ``results`` is the list of
+        assertion results for an ``eventually`` test, or ``None`` for a
+        single-attempt test, and ``attempts`` is the number of ``execute`` calls
+        made (1 without an ``eventually`` block, up to ``max_attempts`` with one).
     """
     if test.eventually is None:
-        return await runner.execute(test, store), None
+        return await runner.execute(test, store), None, 1
+
+    # A wrapper counts execute calls so the attempt count can be surfaced to the
+    # diagnostics without changing ``run_with_retry``'s 2-tuple contract.
+    attempts = 0
 
     async def execute_fn() -> RunnerResponse:
+        nonlocal attempts
+        attempts += 1
         return await runner.execute(test, store)
 
     def assert_fn(response: RunnerResponse) -> list[AssertionResult]:
         return evaluate_assertions(test.assert_, response.status_code, response.body)
 
-    return await run_with_retry(execute_fn, assert_fn, test.eventually, test.id)
+    response, results = await run_with_retry(execute_fn, assert_fn, test.eventually, test.id)
+    return response, results, attempts

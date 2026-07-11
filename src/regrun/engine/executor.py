@@ -21,10 +21,12 @@ import structlog
 
 from regrun.config import settings
 from regrun.engine.assertions import evaluate_assertions
+from regrun.engine.diagnostics import build_failure_diagnostics
 from regrun.engine.reporter import RunResult, TestResult
 from regrun.engine.retry import resolve_response_and_results
 from regrun.engine.variables import VariableStore, capture_from_response, render_test
 from regrun.models import Test, TestFile
+from regrun.runners.base import RunnerResponse
 from regrun.runners.bash_runner import BashRunner
 from regrun.runners.fastmcp_runner import FastMcpRunner
 from regrun.runners.httpx_runner import HttpxRunner
@@ -246,7 +248,9 @@ async def execute_single_test(
         rendered_test = render_test(test, store)
 
         # Execute via runner; an `eventually:` block retries execute+assert.
-        response, results = await resolve_response_and_results(rendered_test, runner, store)
+        response, results, attempts = await resolve_response_and_results(
+            rendered_test, runner, store
+        )
         duration_ms = (time.monotonic() - test_start) * 1000
 
         if verbose:
@@ -266,6 +270,13 @@ async def execute_single_test(
                 passed=False,
                 error=response.error,
                 duration_ms=duration_ms,
+                diagnostics=build_failure_diagnostics(
+                    request=response.request_echo,
+                    response=response,
+                    failed_assertions=[],
+                    attempts=attempts,
+                    secrets=response.secret_values,
+                ),
             )
 
         # Capture variables from response
@@ -282,6 +293,17 @@ async def execute_single_test(
 
         all_passed = all(ar.passed for ar in assertion_results)
 
+        # Full diagnostics only on failure (passing tests stay terse).
+        diagnostics = None
+        if not all_passed:
+            diagnostics = build_failure_diagnostics(
+                request=response.request_echo,
+                response=response,
+                failed_assertions=[ar for ar in assertion_results if not ar.passed],
+                attempts=attempts,
+                secrets=response.secret_values,
+            )
+
         return TestResult(
             test_id=test.id,
             test_name=test.name,
@@ -289,6 +311,7 @@ async def execute_single_test(
             passed=all_passed,
             duration_ms=duration_ms,
             assertion_results=assertion_results,
+            diagnostics=diagnostics,
         )
 
     except Exception as e:
@@ -301,4 +324,10 @@ async def execute_single_test(
             passed=False,
             error=str(e),
             duration_ms=duration_ms,
+            diagnostics=build_failure_diagnostics(
+                request=None,
+                response=RunnerResponse(error=str(e)),
+                failed_assertions=[],
+                attempts=1,
+            ),
         )

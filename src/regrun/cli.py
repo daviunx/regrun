@@ -10,7 +10,7 @@ import structlog
 import yaml
 
 from regrun.config import settings
-from regrun.engine import executor
+from regrun.engine import artifacts, executor
 from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
 from regrun.engine.reporter import format_json, format_text
 from regrun.models import Group, TestFile
@@ -322,11 +322,14 @@ def run(
         executor.run_tests(matched_paths, test_files, fail_fast, verbose, skip_cleanup)
     )
 
-    # Output results
-    if output_format == "json":
-        click.echo(format_json(run_result))
-    else:
-        click.echo(format_text(run_result))
+    # Build both reports, persist them (every run -- pass, fail, or abort), then
+    # emit the requested format followed by the pointer line agents parse.
+    text_report = format_text(run_result)
+    json_report = format_json(run_result)
+    run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report)
+
+    click.echo(json_report if output_format == "json" else text_report)
+    click.echo(artifacts.pointer_line(run_dir))
 
     # Exit with non-zero if any failures
     if run_result.failed > 0 or run_result.errors > 0:

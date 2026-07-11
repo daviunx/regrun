@@ -285,7 +285,8 @@ regrun run tests/regression/ --group 1,2,3
 # Preview test plan without executing
 regrun run tests/regression/ --dry-run
 
-# Verbose output (request/response bodies in logs)
+# Verbose output (request/response bodies in logs for ALL tests; rarely needed —
+# failures are always fully explained by default, see "Failure diagnostics" below)
 regrun run tests/regression/ --verbose
 
 # Stop on first failure
@@ -300,6 +301,12 @@ regrun run tests/regression/ --layer mcp --skip-setup
 # Iterate on one group without running the sweep/cleanup groups
 regrun run tests/regression/ --group 5 --skip-cleanup
 ```
+
+## Failure Diagnostics (default) & Run Artifacts
+
+A failing test is fully explained on the FIRST run — no `--verbose`, no re-run. regrun prints a `Failures` section (between the results table and the summary) with the request echo, response status + body, every failed assertion at full length, and the `eventually` attempt count. `Result: PASS|FAIL` stays the last line. Auth headers and resolved token values are redacted; response bodies are truncated to 2000 chars (`REGRUN_DIAG_BODY_LIMIT`).
+
+Every run also persists the complete report to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{timestamp}/report.txt` + `report.json`, and stdout ends with `Full report: <path>/report.txt (json: report.json)`. **Read that file instead of re-running the suite** to inspect a failure — `--output json`'s `diagnostics` field carries the same data.
 
 ## Linting a Suite
 

@@ -8,7 +8,7 @@ import structlog
 
 from regrun.engine.variables import VariableStore
 from regrun.models import Test
-from regrun.runners.base import RunnerResponse
+from regrun.runners.base import RequestEcho, RunnerResponse
 
 logger = structlog.get_logger()
 
@@ -44,6 +44,7 @@ class BashRunner:
                 status_code=0,
                 body="",
                 error="No commands defined for bash test",
+                request_echo=RequestEcho(runner="bash", commands=[]),
             )
 
         # Per-test ``timeout`` (seconds) overrides the runner default when set.
@@ -56,10 +57,12 @@ class BashRunner:
         last_stdout = ""
         last_exit_code = 0
         collected_stderr: list[str] = []
+        rendered_cmds: list[str] = []
 
         for idx, bash_cmd in enumerate(test.commands):
             # Render Jinja2 variables in the command string
             rendered_cmd = variables.render_string(bash_cmd.cmd)
+            rendered_cmds.append(rendered_cmd)
 
             logger.debug(
                 "bash_command_start",
@@ -116,6 +119,7 @@ class BashRunner:
                     body=_parse_stdout(last_stdout),
                     error=error_msg,
                     duration_ms=duration_ms,
+                    request_echo=RequestEcho(runner="bash", commands=rendered_cmds),
                 )
 
         duration_ms = (time.monotonic() - start) * 1000
@@ -124,6 +128,7 @@ class BashRunner:
             status_code=last_exit_code,
             body=_parse_stdout(last_stdout),
             duration_ms=duration_ms,
+            request_echo=RequestEcho(runner="bash", commands=rendered_cmds),
         )
 
     async def _run_command(self, cmd: str, timeout: int) -> tuple[str, str, int]:

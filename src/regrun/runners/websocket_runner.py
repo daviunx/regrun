@@ -10,7 +10,7 @@ import websockets
 
 from regrun.engine.variables import VariableStore
 from regrun.models import AuthConfig, Test, WebSocketConfig
-from regrun.runners.base import RunnerResponse
+from regrun.runners.base import RequestEcho, RunnerResponse
 
 logger = structlog.get_logger()
 
@@ -47,15 +47,24 @@ class WebSocketRunner:
         Returns:
             RunnerResponse with aggregated event data as body.
         """
+        echo = RequestEcho(
+            runner="websocket",
+            url=test.url,
+            send=test.send,
+            wait_for=test.wait_for,
+        )
+
         if not test.url:
-            return RunnerResponse(error="WebSocket test missing 'url' field")
+            return RunnerResponse(error="WebSocket test missing 'url' field", request_echo=echo)
 
         if not test.send:
-            return RunnerResponse(error="WebSocket test missing 'send' field")
+            return RunnerResponse(error="WebSocket test missing 'send' field", request_echo=echo)
 
         wait_for = test.wait_for
         if not wait_for:
-            return RunnerResponse(error="WebSocket test missing 'wait_for' field")
+            return RunnerResponse(
+                error="WebSocket test missing 'wait_for' field", request_echo=echo
+            )
 
         ws_config = test.ws_config or _DEFAULT_WS_CONFIG
 
@@ -63,6 +72,7 @@ class WebSocketRunner:
         timeout_s = test.timeout / 1000.0 if test.timeout else float(self._timeout)
 
         headers = self._build_headers(test, variables)
+        secret_values = self._resolve_secret_values(test, variables)
 
         logger.debug(
             "ws_request",
@@ -91,6 +101,8 @@ class WebSocketRunner:
             return RunnerResponse(
                 body=body,
                 duration_ms=duration_ms,
+                request_echo=echo,
+                secret_values=secret_values,
             )
 
         except asyncio.TimeoutError:
@@ -106,6 +118,8 @@ class WebSocketRunner:
                     "error": f"WebSocket timed out after {timeout_s}s",
                 },
                 duration_ms=duration_ms,
+                request_echo=echo,
+                secret_values=secret_values,
             )
 
         except Exception as e:
@@ -121,6 +135,8 @@ class WebSocketRunner:
                     "error": f"WebSocket error: {e}",
                 },
                 duration_ms=duration_ms,
+                request_echo=echo,
+                secret_values=secret_values,
             )
 
     async def _stream(
@@ -188,6 +204,17 @@ class WebSocketRunner:
             "duration_ms": 0,  # Placeholder, caller overwrites
             "error": error_msg,
         }
+
+    def _resolve_secret_values(self, test: Test, variables: VariableStore) -> list[str]:
+        """Resolve the auth-token value(s) for body scrubbing (never rendered)."""
+        auth_name = test.auth or self._default_auth
+        if not auth_name or auth_name == "none":
+            return []
+        auth_config = self._auth_configs.get(auth_name)
+        if not auth_config:
+            return []
+        token = variables.render_string(auth_config.token)
+        return [token] if token else []
 
     def _build_headers(self, test: Test, variables: VariableStore) -> dict[str, str]:
         """Build HTTP headers from test auth config and overrides."""
