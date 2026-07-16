@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-16
+
+### Added
+
+- **JUnit XML report output for GitLab MR Tests tab.** Every `regrun run` now emits a `junit.xml` alongside the existing `report.txt` and `report.json` in the run artifacts directory (`{REGRUN_RUNS_DIR}/{product}/{timestamp}/junit.xml`). The XML follows the JUnit spec as consumed by GitLab: one `<testsuite>` per source YAML file, one `<testcase>` per test with `classname="{product}.{file_stem}.{group_name}"`. Failed tests carry a `<failure>` element with the full diagnostics body (request echo, response, failed assertions -- same redaction as report.txt), errored tests carry `<error>`, and skipped tests carry `<skipped/>`. All text is XML-escaped; failure/error bodies are capped at 16 KB to avoid GitLab's poor handling of huge bodies. No new CLI flags needed -- JUnit output is always generated. Wire it in CI with:
+  ```yaml
+  artifacts:
+    when: always
+    reports:
+      junit: regrun-runs/**/junit.xml
+    paths:
+      - regrun-runs/
+  ```
+- `TestResult.file_stem` field tracks the source YAML file stem for JUnit suite grouping.
+
 ## [0.6.0] - 2026-07-11
 
 ### Added

@@ -18,6 +18,7 @@ from regrun.engine.reporter import RunResult
 
 REPORT_TXT = "report.txt"
 REPORT_JSON = "report.json"
+REPORT_JUNIT = "junit.xml"
 
 
 def _runs_base_dir() -> Path:
@@ -28,8 +29,13 @@ def _runs_base_dir() -> Path:
     return Path.home() / ".regrun" / "runs"
 
 
-def write_run_artifacts(run_result: RunResult, text_report: str, json_report: str) -> Path:
-    """Write ``report.txt`` + ``report.json`` for a run; return the run directory.
+def write_run_artifacts(
+    run_result: RunResult,
+    text_report: str,
+    json_report: str,
+    junit_report: str = "",
+) -> Path:
+    """Write ``report.txt`` + ``report.json`` + ``junit.xml`` for a run; return the run directory.
 
     The directory is ``{base}/{product}/{timestamp}`` and is created if needed.
     """
@@ -39,10 +45,12 @@ def write_run_artifacts(run_result: RunResult, text_report: str, json_report: st
 
     (run_dir / REPORT_TXT).write_text(text_report)
     (run_dir / REPORT_JSON).write_text(json_report)
+    if junit_report:
+        (run_dir / REPORT_JUNIT).write_text(junit_report)
 
     return run_dir
 
 
 def pointer_line(run_dir: Path) -> str:
     """The stdout tail line an agent parses to locate the full report."""
-    return f"Full report: {run_dir / REPORT_TXT} (json: {REPORT_JSON})"
+    return f"Full report: {run_dir / REPORT_TXT} (json: {REPORT_JSON}, junit: {REPORT_JUNIT})"

@@ -147,7 +147,18 @@ Each failed test's diagnostics carries the **request echo** (method/URL/headers/
 
 **Redaction:** request headers are redacted at capture time by canonical sensitive-field patterns (`authorization`, `*token*`, `*key*`, `cookie`, …), and any resolved auth-token value is scrubbed wherever it appears (including a token echoed back in a response body). Response bodies are truncated to 2000 chars (see `REGRUN_DIAG_BODY_LIMIT`) with a `…[truncated, N total chars]` annotation.
 
-**Persistent artifacts:** *every* run — pass, fail, or `--fail-fast` abort — writes the full `report.txt` + `report.json` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with the pointer line above. An AI agent (or a human) reads the file instead of re-running a multi-minute suite to see a truncated error. Timestamped dirs are never auto-pruned (plain text, negligible size).
+**Persistent artifacts:** *every* run — pass, fail, or `--fail-fast` abort — writes the full `report.txt` + `report.json` + `junit.xml` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with the pointer line above. An AI agent (or a human) reads the file instead of re-running a multi-minute suite to see a truncated error. Timestamped dirs are never auto-pruned (plain text, negligible size).
+
+**JUnit XML for GitLab Tests tab:** The `junit.xml` artifact follows the JUnit spec as consumed by GitLab — one `<testsuite>` per source YAML file, one `<testcase>` per test. Failed tests carry a `<failure>` element with the full diagnostics body (same redaction as report.txt), errored tests `<error>`, skipped tests `<skipped/>`. Bodies are capped at 16 KB. Wire it in your `.gitlab-ci.yml`:
+
+```yaml
+artifacts:
+  when: always
+  reports:
+    junit: regrun-runs/**/junit.xml
+  paths:
+    - regrun-runs/
+```
 
 ---
 
@@ -733,7 +744,7 @@ regrun run tests/regression/
 | `REGRUN_VERBOSE` | `false` | Log full request/response bodies |
 | `REGRUN_API_ENDPOINT` | — | Override `meta.endpoint` globally (for CI) |
 | `REGRUN_MCP_ENDPOINT` | — | Override `meta.mcp_endpoint` globally (for CI) |
-| `REGRUN_RUNS_DIR` | `~/.regrun/runs` | Base dir for persisted `report.txt` + `report.json` artifacts |
+| `REGRUN_RUNS_DIR` | `~/.regrun/runs` | Base dir for persisted `report.txt` + `report.json` + `junit.xml` artifacts |
 | `REGRUN_DIAG_BODY_LIMIT` | `2000` | Max response-body chars kept in failure diagnostics |
 
 ---

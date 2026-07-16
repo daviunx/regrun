@@ -27,7 +27,7 @@ from click.testing import CliRunner
 from regrun.cli import cli
 
 PRODUCT = "diag"
-POINTER_RE = re.compile(r"Full report: (?P<txt>.+/report\.txt) \(json: report\.json\)")
+POINTER_RE = re.compile(r"Full report: (?P<txt>.+/report\.txt) \(json: report\.json, junit: junit\.xml\)")
 TS_DIR_RE = re.compile(r"^\d{8}-\d{6}")
 
 
@@ -115,6 +115,7 @@ def test_run_writes_report_artifacts_even_on_failure(tmp_path, monkeypatch) -> N
     run_dir = _artifact_dir(runs_dir)
     assert (run_dir / "report.txt").is_file()
     assert (run_dir / "report.json").is_file()
+    assert (run_dir / "junit.xml").is_file()
 
 
 def test_stdout_ends_with_pointer_line(tmp_path, monkeypatch) -> None:
