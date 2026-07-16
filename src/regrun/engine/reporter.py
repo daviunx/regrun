@@ -32,6 +32,7 @@ class TestResult(BaseModel):
     skipped: bool = False
     error: str | None = None
     duration_ms: float = 0.0
+    file_stem: str = ""
     assertion_results: list[AssertionResult] = Field(default_factory=list)
     diagnostics: FailureDiagnostics | None = None
 

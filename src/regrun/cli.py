@@ -12,6 +12,7 @@ import yaml
 from regrun.config import settings
 from regrun.engine import artifacts, executor
 from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
+from regrun.engine.junit import format_junit
 from regrun.engine.reporter import format_json, format_text
 from regrun.models import Group, TestFile
 
@@ -327,13 +328,14 @@ def run(
     # suppress it.
     text_report = format_text(run_result)
     json_report = format_json(run_result)
+    junit_report = format_junit(run_result)
     click.echo(json_report if output_format == "json" else text_report)
 
     # Persist the full report to disk (every run -- pass, fail, or abort). A
     # write failure (unwritable REGRUN_RUNS_DIR, disk full, bad product name) is
     # surfaced as a warning on stderr and never changes the exit code.
     try:
-        run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report)
+        run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report, junit_report)
         click.echo(artifacts.pointer_line(run_dir))
     except OSError as e:
         click.echo(f"Warning: could not persist run artifacts: {e}", err=True)

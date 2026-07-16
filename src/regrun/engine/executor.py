@@ -108,13 +108,14 @@ async def close_runners(runner_cache: dict[str, Runner]) -> None:
             logger.warning("runner_close_failed", error=str(exc))
 
 
-def _skipped_result(test: Test, group_name: str) -> TestResult:
+def _skipped_result(test: Test, group_name: str, file_stem: str = "") -> TestResult:
     return TestResult(
         test_id=test.id,
         test_name=test.name,
         group_name=group_name,
         passed=False,
         skipped=True,
+        file_stem=file_stem,
     )
 
 
@@ -172,7 +173,7 @@ async def run_tests(
             force_run_cleanup = group.cleanup and not skip_cleanup
 
             if aborted and not force_run_cleanup:
-                all_results.extend(_skipped_result(t, group.name) for t in group.tests)
+                all_results.extend(_skipped_result(t, group.name, path.stem) for t in group.tests)
                 continue
 
             logger.info(
@@ -194,6 +195,7 @@ async def run_tests(
                             group_name=group.name,
                             passed=False,
                             error=f"Unsupported runner: {effective_type}",
+                            file_stem=path.stem,
                         )
                     )
                     continue
@@ -204,6 +206,7 @@ async def run_tests(
                     runner=runner,
                     store=store,
                     verbose=verbose,
+                    file_stem=path.stem,
                 )
                 all_results.append(result)
 
@@ -239,6 +242,7 @@ async def execute_single_test(
     runner: Runner,
     store: VariableStore,
     verbose: bool,
+    file_stem: str = "",
 ) -> TestResult:
     """Execute a single test: render, run, capture, assert."""
     test_start = time.monotonic()
@@ -270,6 +274,7 @@ async def execute_single_test(
                 passed=False,
                 error=response.error,
                 duration_ms=duration_ms,
+                file_stem=file_stem,
                 diagnostics=build_failure_diagnostics(
                     request=response.request_echo,
                     response=response,
@@ -310,6 +315,7 @@ async def execute_single_test(
             group_name=group_name,
             passed=all_passed,
             duration_ms=duration_ms,
+            file_stem=file_stem,
             assertion_results=assertion_results,
             diagnostics=diagnostics,
         )
@@ -324,6 +330,7 @@ async def execute_single_test(
             passed=False,
             error=str(e),
             duration_ms=duration_ms,
+            file_stem=file_stem,
             diagnostics=build_failure_diagnostics(
                 request=None,
                 response=RunnerResponse(error=str(e)),
