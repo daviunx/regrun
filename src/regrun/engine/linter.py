@@ -30,6 +30,8 @@ W004 warn A POST/create-shaped test whose body/args carry no ``{{RUN_ID}}``
 W005 warn A cleanup-flagged group references a variable captured in ANOTHER
           group of the same file — capture-dependent sweep (should be
           pattern-based / capture-independent).
+W006 warn The suite directory declares NO ``preflight:`` block in any file —
+          missing dependency-health probes (adoption nudge). Directory-level.
 ==== ==== ================================================================
 """
 
@@ -341,6 +343,18 @@ def lint_directory(
                             message=f"mcp-layer file sorts after cleanup file '{cname}'",
                         )
                     )
+
+    # W006 — directory-level: no preflight block anywhere in the suite.
+    if parsed and not any(raw.get("preflight") for _, raw, _ in parsed):
+        findings.append(
+            LintFinding(
+                file="-",
+                test_id="-",
+                rule="W006",
+                severity=WARN,
+                message="suite declares no preflight: block (missing dependency-health probes)",
+            )
+        )
 
     for path, raw, text in parsed:
         file_allows = any(fnmatch.fnmatch(path.name, g) for g in allow_positional)

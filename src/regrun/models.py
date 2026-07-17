@@ -2,7 +2,26 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class SqlConnection(BaseModel):
+    """Connection descriptor for the ``sql`` runner.
+
+    All values are Jinja-renderable strings so the product-prefixed env
+    convention is preserved (e.g. ``database: "{{ env.get('RALLY_DB',
+    'rally_prod') }}"``) without introducing any new ``REGRUN_SQL_*`` vars.
+    The runner probes for docker at run time: when available it uses
+    ``docker exec -i {docker_container} psql -U {docker_user} -d {database}``;
+    otherwise it falls back to ``psql {fallback_dsn}``.
+    """
+
+    model_config = ConfigDict(strict=False)
+
+    docker_container: str
+    docker_user: str
+    database: str
+    fallback_dsn: str
 
 
 class TestMeta(BaseModel):
@@ -12,11 +31,12 @@ class TestMeta(BaseModel):
 
     product: str
     layer: Literal["api", "mcp", "setup", "chat"]
-    runner: Literal["httpx", "fastmcp", "bash", "websocket"]
+    runner: Literal["httpx", "fastmcp", "bash", "websocket", "sql"]
     endpoint: str | None = None
     mcp_endpoint: str | None = None
     default_auth: str | None = None
     env_file: str | None = None
+    sql_connection: SqlConnection | None = None
 
 
 class AuthConfig(BaseModel):
@@ -104,6 +124,9 @@ class Test(BaseModel):
     # Bash-specific fields
     commands: list[BashCommand] | None = None
 
+    # SQL-specific field (statement(s); Jinja-rendered like ``commands``)
+    sql: str | None = None
+
     # WebSocket-specific fields
     url: str | None = None
     send: dict | None = None
@@ -112,7 +135,7 @@ class Test(BaseModel):
     ws_config: WebSocketConfig | None = None
 
     # Per-test runner override (used when meta.runner differs, e.g. setup file)
-    runner: Literal["httpx", "fastmcp", "bash", "websocket"] | None = None
+    runner: Literal["httpx", "fastmcp", "bash", "websocket", "sql"] | None = None
 
     # Common fields
     assert_: Assertion = Field(alias="assert")
@@ -140,6 +163,68 @@ class Group(BaseModel):
     tests: list[Test]
 
 
+class PreflightCheck(BaseModel):
+    """A dependency-health probe run once, before any group.
+
+    A preflight check carries a ``Test``-shaped body (any runner) plus a
+    ``name`` naming the dependency it asserts (used in the abort message).
+    Checks are strictly read-only probes: ``eventually:`` and ``capture:`` are
+    REJECTED at validation — a health probe must not retry a degraded backend
+    into looking healthy, nor feed run state. ``timeout`` defaults to 10s.
+    """
+
+    model_config = ConfigDict(strict=False, populate_by_name=True)
+
+    name: str
+
+    # Test-shaped body (subset relevant to a read-only probe on any surface).
+    runner: Literal["httpx", "fastmcp", "bash", "websocket", "sql"] | None = None
+    method: str | None = None
+    path: str | None = None
+    auth: str | None = None
+    org_header: bool | None = None
+    body: dict | None = None
+    query_params: dict[str, str] | None = None
+    tool: str | None = None
+    args: dict | None = None
+    commands: list[BashCommand] | None = None
+    sql: str | None = None
+
+    assert_: Assertion = Field(alias="assert")
+    timeout: float = 10.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_stateful_keys(cls, data: object) -> object:
+        """Preflight probes must be stateless: forbid ``eventually`` / ``capture``."""
+        if isinstance(data, dict):
+            if "eventually" in data:
+                raise ValueError("preflight checks may not use 'eventually:' (read-only probes)")
+            if "capture" in data:
+                raise ValueError("preflight checks may not use 'capture:' (read-only probes)")
+        return data
+
+    def as_test(self) -> "Test":
+        """Materialize the probe as a ``Test`` for the runner layer."""
+        return Test(
+            id=f"preflight:{self.name}",
+            name=self.name,
+            runner=self.runner,
+            method=self.method,
+            path=self.path,
+            auth=self.auth,
+            org_header=self.org_header,
+            body=self.body,
+            query_params=self.query_params,
+            tool=self.tool,
+            args=self.args,
+            commands=self.commands,
+            sql=self.sql,
+            timeout=int(self.timeout),
+            assert_=self.assert_,
+        )
+
+
 class TestFile(BaseModel):
     """Top-level model representing a parsed YAML test file."""
 
@@ -148,4 +233,5 @@ class TestFile(BaseModel):
     meta: TestMeta
     variables: dict[str, str] = Field(default_factory=dict)
     auth: dict[str, AuthConfig] = Field(default_factory=dict)
+    preflight: list[PreflightCheck] | None = None
     groups: list[Group]

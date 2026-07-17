@@ -202,6 +202,8 @@ regrun run TEST_DIR [OPTIONS]
 | `--fail-fast` | flag | false | Stop on first failure (cleanup groups still run) |
 | `--skip-setup` | flag | false | Skip setup layer |
 | `--skip-cleanup` | flag | false | Skip cleanup-flagged groups (use when iterating; leaks must be swept later) |
+| `--skip-preflight` | flag | false | Skip `preflight:` dependency-health checks (deliberate local override) |
+| `--no-lock` | flag | false | Bypass the per-product run lock (allow a concurrent run for this product) |
 
 Examples:
 
@@ -221,6 +223,90 @@ regrun run tests/regression/ --dry-run
 # Iterate on group 5 without running the sweep groups
 regrun run tests/regression/ --group 5 --skip-cleanup
 ```
+
+## `sql` Runner
+
+A first-class runner for Postgres statements. It absorbs the psql half of the fleet's hand-rolled bash steps and resolves the docker-exec-vs-direct-psql dispatch **once**, in Python — no more copy-pasting the `command -v docker && docker info` guard into every suite. **No new DB driver is added:** the runner shells out to `psql` exactly as the bash steps did.
+
+Declare a connection in `meta.sql_connection` and put SQL in a test's `sql:` field:
+
+```yaml
+meta:
+  product: rally
+  layer: api
+  runner: sql
+  sql_connection:
+    docker_container: "{{ env.get('RALLY_COMPOSE_PROJECT', 'rally') }}-db-1"
+    docker_user: postgres
+    database: "{{ env.get('RALLY_DB', 'rally_prod') }}"
+    fallback_dsn: "{{ env.get('RALLY_DSN', 'postgres://postgres@localhost:5432/rally_prod') }}"
+
+groups:
+  - id: 5
+    name: DB invariants
+    tests:
+      - id: SQL.1
+        name: no orphaned rows
+        sql: "SELECT to_jsonb(count(*)) FROM events WHERE org_id IS NULL;"
+        assert:
+          last_exit_code: 0
+          contains: "0"
+```
+
+Dispatch: the runner probes `shutil.which("docker")` + `docker info` (cached per run). When docker is available it runs `docker exec -i {container} psql -U {user} -d {db}`; otherwise `psql {fallback_dsn}`. Every invocation carries `-v ON_ERROR_STOP=1 -q -t -A` and receives the statement on stdin. Stdout is parsed JSON-or-string exactly like the bash runner, so `contains` / `json_path` on `to_jsonb(...)` output transfer 1:1.
+
+- **Connection values are Jinja-renderable strings** — keep the product-prefixed env convention (`{{ env.get('RALLY_DB', ...) }}`); there are no new `REGRUN_SQL_*` vars.
+- **SQL only.** App-command steps (`docker compose exec … python -m …` seeders/reindexers) and OpenSearch curl steps stay `runner: bash`.
+- **Adoption is pin-gated:** `runner: sql` **hard-fails to parse on a pre-0.8.0 binary** (Literal enforcement). A suite may adopt it only after its CI pin is ≥ 0.8.0.
+
+## `preflight:` Dependency-Health Checks
+
+A top-level `preflight:` block lists read-only probes that run **once, before any group**, and abort the whole run in seconds naming the failed dependency — killing the degraded-backend grind regime (a slow/broken backend otherwise burns the full suite budget retrying).
+
+```yaml
+meta:
+  product: rally
+  layer: api
+  runner: httpx
+  endpoint: http://rally-api:8000
+
+preflight:
+  - name: api-reachable
+    runner: httpx
+    method: GET
+    path: /health
+    assert:
+      status: 200
+  - name: db-reachable
+    runner: sql
+    sql: "SELECT 1;"
+    assert:
+      last_exit_code: 0
+
+groups:
+  - id: 5
+    name: API surface
+    tests: [...]
+```
+
+- Checks carry a `Test`-shaped body on any runner, plus a `name` (used in the abort message) and a `timeout` (default `10.0`s).
+- **Constraints (validation-enforced):** a check may **not** use `eventually:` or `capture:` — a health probe must not retry a degraded backend into looking healthy, nor feed run state.
+- Checks are collected across **all** loaded files in file order. The first failure aborts: the CLI prints `PREFLIGHT FAILED: <name>` + diagnostics and exits non-zero having executed **zero** groups.
+- `--skip-preflight` bypasses them (deliberate local override); `--dry-run` lists them.
+- On a passing run the report header prints `preflight: N checks passed`.
+- **Compat:** `preflight:` is **silently ignored by a pre-0.8.0 binary** (unknown key). A CI log missing the `preflight:` header line was run by an old pin — lint **W006** and the header count make this detectable while pins lag.
+
+## Per-Product Run Lock
+
+Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock` for its duration, mechanically enforcing the sweep-first no-concurrency assumption. A second concurrent run for the same product **exits code 2** naming the product + lock path:
+
+```
+Another regression run for 'rally' is in progress (lock: /…/.regrun/runs/rally/.lock)
+```
+
+- flock **self-releases on process death** (incl. SIGKILL) — no stale-lock protocol.
+- `--no-lock` bypasses the lock (allow a deliberate concurrent run).
+- **Network filesystems:** flock semantics are unreliable over NFS/CIFS. `REGRUN_RUNS_DIR` is expected to be local (`~/.regrun` or the CI workspace).
 
 ### `regrun lint`
 
@@ -248,6 +334,7 @@ regrun lint TARGET [OPTIONS]
 | W003 | warn | `eventually:` worst-case ceiling below the budget floor (default 75s) |
 | W004 | warn | POST/create-shaped test whose body/args carry no `{{RUN_ID}}`/`{{timestamp}}` (4xx-asserting negative tests are skipped) |
 | W005 | warn | Cleanup-flagged group references a variable captured in another group (capture-dependent sweep) |
+| W006 | warn | The suite directory declares no `preflight:` block in any file — missing dependency-health probes (adoption nudge) |
 
 ```bash
 # Lint before committing suite changes

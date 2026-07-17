@@ -23,6 +23,7 @@ from regrun.config import settings
 from regrun.engine.assertions import evaluate_assertions
 from regrun.engine.diagnostics import build_failure_diagnostics
 from regrun.engine.reporter import RunResult, TestResult
+from regrun.engine.run_lock import RunLockError, acquire_run_lock, release_run_lock
 from regrun.engine.retry import resolve_response_and_results
 from regrun.engine.variables import VariableStore, capture_from_response, render_test
 from regrun.models import Test, TestFile
@@ -30,11 +31,14 @@ from regrun.runners.base import RunnerResponse
 from regrun.runners.bash_runner import BashRunner
 from regrun.runners.fastmcp_runner import FastMcpRunner
 from regrun.runners.httpx_runner import HttpxRunner
+from regrun.runners.sql_runner import SqlRunner
 from regrun.runners.websocket_runner import WebSocketRunner
 
 logger = structlog.get_logger()
 
-Runner = HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner
+Runner = HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner | SqlRunner
+
+__all__ = ["RunLockError", "run_tests", "create_runner_for_type"]
 
 
 def create_runner_for_type(runner_type: str, test_file: TestFile) -> Runner | None:
@@ -67,6 +71,13 @@ def create_runner_for_type(runner_type: str, test_file: TestFile) -> Runner | No
         # Use the current working directory as the cwd for bash commands.
         # This is where regrun was invoked from.
         return BashRunner(cwd=str(Path.cwd()), timeout=settings.timeout)
+
+    if runner_type == "sql":
+        return SqlRunner(
+            sql_connection=test_file.meta.sql_connection,
+            cwd=str(Path.cwd()),
+            timeout=settings.timeout,
+        )
 
     if runner_type == "websocket":
         return WebSocketRunner(
@@ -119,19 +130,122 @@ def _skipped_result(test: Test, group_name: str, file_stem: str = "") -> TestRes
     )
 
 
+class _PreflightOutcome:
+    """Outcome of the preflight phase.
+
+    ``count`` is the number of checks actually executed; ``failed_result`` /
+    ``failed_name`` are set only when a check failed (short-circuit).
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.failed_result: TestResult | None = None
+        self.failed_name: str | None = None
+
+
+async def _run_preflight(
+    yaml_files: list[Path],
+    test_files: list[TestFile],
+    store: VariableStore,
+    verbose: bool,
+) -> _PreflightOutcome | None:
+    """Run every ``preflight:`` check across all files, once, before any group.
+
+    Returns ``None`` when no checks are declared. Otherwise returns an outcome
+    carrying the executed count and, on the first failure, the failing result —
+    the caller aborts the run without executing any group.
+    """
+    checks = [(path, tf, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])]
+    if not checks:
+        return None
+
+    # Static file variables must be resolvable inside a probe (env is already
+    # loaded). Merge them (skip-if-set) mirroring the per-file loop; capture is
+    # forbidden in checks so no run state is introduced here.
+    for _path, tf in zip(yaml_files, test_files):
+        store.merge(
+            {k: store.render_string(v) for k, v in tf.variables.items() if store.get(k) is None}
+        )
+
+    outcome = _PreflightOutcome()
+    runner_cache: dict[str, Runner] = {}
+    for path, test_file, check in checks:
+        test = check.as_test()
+        runner = get_runner_for_test(test, test_file, runner_cache)
+        outcome.count += 1
+        if runner is None:
+            effective_type = test.runner or test_file.meta.runner
+            outcome.failed_result = TestResult(
+                test_id=test.id,
+                test_name=test.name,
+                group_name="preflight",
+                passed=False,
+                error=f"Unsupported runner: {effective_type}",
+                file_stem=path.stem,
+            )
+            outcome.failed_name = check.name
+            break
+
+        result = await execute_single_test(
+            test=test,
+            group_name="preflight",
+            runner=runner,
+            store=store,
+            verbose=verbose,
+            file_stem=path.stem,
+        )
+        if not result.passed:
+            outcome.failed_result = result
+            outcome.failed_name = check.name
+            break
+
+    await close_runners(runner_cache)
+    return outcome
+
+
 async def run_tests(
     yaml_files: list[Path],
     test_files: list[TestFile],
     fail_fast: bool,
     verbose: bool,
     skip_cleanup: bool = False,
+    skip_preflight: bool = False,
+    no_lock: bool = False,
 ) -> RunResult:
     """Execute all tests across all files and collect results.
+
+    A per-product exclusive run lock is held for the duration (unless
+    ``no_lock``): a concurrent run for the same product raises ``RunLockError``
+    so the sweep-first no-concurrency assumption is enforced mechanically.
+
+    Preflight checks (``preflight:`` blocks, collected across all loaded files in
+    file order) run once, after env/variables load and before any group. Any
+    preflight failure aborts the run immediately with a ``preflight_failed``
+    result and executes zero groups. ``skip_preflight`` bypasses them.
 
     On a ``--fail-fast`` abort, cleanup-flagged groups still run (unless
     ``skip_cleanup``); every other remaining test is marked skipped. Iteration
     continues across all files so cleanup groups in later files also execute.
     """
+    lock_product = test_files[0].meta.product if test_files else "unknown"
+    lock_fd = None if no_lock else acquire_run_lock(lock_product)
+    try:
+        return await _run_tests_locked(
+            yaml_files, test_files, fail_fast, verbose, skip_cleanup, skip_preflight
+        )
+    finally:
+        release_run_lock(lock_fd)
+
+
+async def _run_tests_locked(
+    yaml_files: list[Path],
+    test_files: list[TestFile],
+    fail_fast: bool,
+    verbose: bool,
+    skip_cleanup: bool,
+    skip_preflight: bool,
+) -> RunResult:
+    """Run body, executed while the per-product lock is held (see ``run_tests``)."""
     store = VariableStore()
     all_results: list[TestResult] = []
     run_start = time.monotonic()
@@ -150,6 +264,26 @@ async def run_tests(
             else:
                 logger.warning("env_file_not_found", path=str(env_path))
             break
+
+    # Preflight phase: read-only dependency-health probes, run once before any
+    # group. A failure aborts the run in seconds naming the failed dependency.
+    preflight_count = 0
+    if not skip_preflight:
+        preflight_result = await _run_preflight(yaml_files, test_files, store, verbose)
+        if preflight_result is not None:
+            preflight_count = preflight_result.count
+            if preflight_result.failed_result is not None:
+                run_duration = (time.monotonic() - run_start) * 1000
+                return RunResult(
+                    product=product,
+                    layer=layer,
+                    duration_ms=run_duration,
+                    preflight_count=preflight_result.count,
+                    preflight_failed=True,
+                    preflight_failed_name=preflight_result.failed_name,
+                    preflight_diagnostics=preflight_result.failed_result.diagnostics,
+                    preflight_error=preflight_result.failed_result.error,
+                )
 
     for path, test_file in zip(yaml_files, test_files):
         logger.info("processing_file", file=path.name, layer=test_file.meta.layer)
@@ -233,6 +367,7 @@ async def run_tests(
         errors=sum(1 for r in all_results if r.error),
         duration_ms=run_duration,
         test_results=all_results,
+        preflight_count=preflight_count,
     )
 
 

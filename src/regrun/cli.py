@@ -162,6 +162,13 @@ def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
     click.echo("\n  DRY RUN - Test Plan")
     click.echo("  " + "=" * 40)
 
+    preflight_checks = [(path, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])]
+    if preflight_checks:
+        click.echo(f"\n  Preflight ({len(preflight_checks)} checks):")
+        for path, chk in preflight_checks:
+            runner = chk.runner or "meta.runner"
+            click.echo(f"    [{path.name}] {chk.name} (runner: {runner})")
+
     total_tests = 0
     for path, tf in zip(yaml_files, test_files):
         click.echo(f"\n  File: {path.name}")
@@ -249,6 +256,18 @@ def cli() -> None:
     default=False,
     help="Skip cleanup-flagged groups (use when iterating; leaks must be swept later)",
 )
+@click.option(
+    "--skip-preflight",
+    is_flag=True,
+    default=False,
+    help="Skip preflight dependency-health checks (deliberate local override)",
+)
+@click.option(
+    "--no-lock",
+    is_flag=True,
+    default=False,
+    help="Bypass the per-product run lock (allow a concurrent run for this product)",
+)
 def run(
     target: str,
     layer: str | None,
@@ -260,6 +279,8 @@ def run(
     fail_fast: bool,
     skip_setup: bool,
     skip_cleanup: bool,
+    skip_preflight: bool,
+    no_lock: bool,
 ) -> None:
     """Run regression tests.
 
@@ -318,10 +339,36 @@ def run(
         _print_dry_run(matched_paths, test_files)
         return
 
-    # Execute tests
-    run_result = asyncio.run(
-        executor.run_tests(matched_paths, test_files, fail_fast, verbose, skip_cleanup)
-    )
+    # Execute tests (per-product lock held for the duration unless --no-lock)
+    try:
+        run_result = asyncio.run(
+            executor.run_tests(
+                matched_paths,
+                test_files,
+                fail_fast,
+                verbose,
+                skip_cleanup,
+                skip_preflight,
+                no_lock,
+            )
+        )
+    except executor.RunLockError as e:
+        click.echo(str(e), err=True)
+        sys.exit(2)
+
+    # Preflight failure: instant abort before any group ran. Print the failed
+    # dependency + its diagnostics and exit non-zero; no group was executed.
+    if run_result.preflight_failed:
+        click.echo(f"PREFLIGHT FAILED: {run_result.preflight_failed_name}")
+        if run_result.preflight_error:
+            click.echo(f"  error: {run_result.preflight_error}")
+        diag = run_result.preflight_diagnostics
+        if diag is not None:
+            for ar in diag.failed_assertions:
+                click.echo(f"  ✗ {ar.assertion_type}: {ar.message}")
+            if diag.response_body is not None:
+                click.echo(f"  response body: {diag.response_body}")
+        sys.exit(1)
 
     # Emit the results FIRST and unconditionally -- showing the run is the whole
     # point; artifact persistence is a best-effort side channel that must never

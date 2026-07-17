@@ -50,6 +50,15 @@ class RunResult(BaseModel):
     duration_ms: float = 0.0
     test_results: list[TestResult] = Field(default_factory=list)
 
+    # Preflight phase (dependency-health probes run before any group).
+    # ``preflight_count`` is the number of checks executed; the ``preflight_*``
+    # failure fields are populated only when a check aborted the run.
+    preflight_count: int = 0
+    preflight_failed: bool = False
+    preflight_failed_name: str | None = None
+    preflight_diagnostics: FailureDiagnostics | None = None
+    preflight_error: str | None = None
+
 
 def format_text(run_result: RunResult) -> str:
     """Format run results as a human-readable text table.
@@ -68,6 +77,10 @@ def format_text(run_result: RunResult) -> str:
         header += f" (layer: {run_result.layer})"
     lines.append(header)
     lines.append("=" * len(header))
+    # Preflight visibility: a CI log missing this line was run by a pre-0.8.0
+    # binary that silently ignored the suite's preflight blocks.
+    if run_result.preflight_count > 0:
+        lines.append(f"preflight: {run_result.preflight_count} checks passed")
     lines.append("")
 
     # Column widths
@@ -177,6 +190,8 @@ def _one_failure(tr: TestResult) -> list[str]:
         if req.commands:
             for cmd in req.commands:
                 lines.append(f"  $ {cmd}")
+        if req.sql:
+            lines.append(f"  sql: {req.sql}")
         if req.headers:
             lines.append(f"  headers: {req.headers}")
         if req.body is not None:

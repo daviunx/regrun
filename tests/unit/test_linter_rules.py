@@ -557,10 +557,22 @@ def test_w005_clean_pattern_sweep(tmp_path: Path) -> None:
     assert "W005" not in _rules(lint_directory(tmp_path))
 
 
-# --------------------------------------------------------------------------- misc
+# --------------------------------------------------------------------------- W006
 
 
-def test_clean_suite_exit_zero(tmp_path: Path) -> None:
+def _preflight_block() -> list[dict]:
+    return [
+        {
+            "name": "backend-health",
+            "runner": "bash",
+            "commands": [{"cmd": "true"}],
+            "assert": {"last_exit_code": 0},
+        }
+    ]
+
+
+def test_w006_no_preflight_in_suite_flagged(tmp_path: Path) -> None:
+    # A suite directory with no `preflight:` block anywhere -> W006 (adoption nudge).
     _write(
         tmp_path,
         "01_api.yaml",
@@ -569,19 +581,54 @@ def test_clean_suite_exit_zero(tmp_path: Path) -> None:
                 {
                     "id": 5,
                     "name": "A",
-                    "tests": [
-                        {
-                            "id": "A.1",
-                            "name": "t",
-                            "method": "GET",
-                            "path": "/x",
-                            "assert": {"status": 200},
-                        }
-                    ],
+                    "tests": [{"id": "A.1", "name": "t", "method": "GET", "assert": {"status": 200}}],
                 }
             ]
         ),
     )
+    assert "W006" in _rules(lint_directory(tmp_path))
+
+
+def test_w006_clean_with_preflight(tmp_path: Path) -> None:
+    # At least one file carries a `preflight:` block -> W006 does not fire.
+    doc = _api_doc(
+        [
+            {
+                "id": 5,
+                "name": "A",
+                "tests": [{"id": "A.1", "name": "t", "method": "GET", "assert": {"status": 200}}],
+            }
+        ]
+    )
+    doc["preflight"] = _preflight_block()
+    _write(tmp_path, "01_api.yaml", doc)
+    assert "W006" not in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- misc
+
+
+def test_clean_suite_exit_zero(tmp_path: Path) -> None:
+    doc = _api_doc(
+        [
+            {
+                "id": 5,
+                "name": "A",
+                "tests": [
+                    {
+                        "id": "A.1",
+                        "name": "t",
+                        "method": "GET",
+                        "path": "/x",
+                        "assert": {"status": 200},
+                    }
+                ],
+            }
+        ]
+    )
+    # A fully-clean suite now carries a preflight block (else W006 fires).
+    doc["preflight"] = _preflight_block()
+    _write(tmp_path, "01_api.yaml", doc)
     findings = lint_directory(tmp_path)
     assert findings == []
     assert lint_exit_code(findings) == 0

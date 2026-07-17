@@ -12,6 +12,7 @@
 | REST API endpoints | `httpx` | `method`, `path`, `body`, `query_params` |
 | MCP tool calls | `fastmcp` | `tool`, `args` |
 | Shell commands / DB setup | `bash` | `commands: [{cmd, capture}]` |
+| Postgres SQL statements | `sql` | `sql:` (+ `meta.sql_connection`) |
 | WebSocket streaming / chat | `websocket` | `url`, `send`, `wait_for`, `timeout` |
 
 ---
@@ -114,6 +115,27 @@ groups:
     last_exit_code: 0
     contains: "UPDATE 1"
 ```
+
+### sql
+
+```yaml
+# meta:
+#   runner: sql
+#   sql_connection:
+#     docker_container: "{{ env.get('RALLY_COMPOSE_PROJECT', 'rally') }}-db-1"
+#     docker_user: postgres
+#     database: "{{ env.get('RALLY_DB', 'rally_prod') }}"
+#     fallback_dsn: "{{ env.get('RALLY_DSN', 'postgres://postgres@localhost:5432/rally_prod') }}"
+- id: "SQL.1"
+  name: "no orphaned rows"
+  runner: sql
+  sql: "SELECT to_jsonb(count(*)) FROM events WHERE org_id IS NULL;"
+  assert:
+    last_exit_code: 0
+    contains: "0"
+```
+
+Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, else `psql {fallback_dsn}`); every call carries `-v ON_ERROR_STOP=1 -q -t -A` and the statement on stdin. Connection values are Jinja-renderable — keep the product-prefixed env convention, no new `REGRUN_SQL_*` vars. **SQL only** — app-command exec + OpenSearch curl steps stay `runner: bash`. `runner: sql` hard-fails to parse on a pre-0.8.0 binary; adopt only after the CI pin is ≥ 0.8.0.
 
 ### websocket
 
@@ -300,7 +322,29 @@ regrun run tests/regression/ --layer mcp --skip-setup
 
 # Iterate on one group without running the sweep/cleanup groups
 regrun run tests/regression/ --group 5 --skip-cleanup
+
+# Skip preflight dependency-health checks (deliberate local override)
+regrun run tests/regression/ --skip-preflight
+
+# Bypass the per-product run lock (allow a concurrent run for this product)
+regrun run tests/regression/ --no-lock
 ```
+
+### Preflight checks
+
+A top-level `preflight:` block lists read-only probes that run **once, before any group**, and abort the run in seconds naming the failed dependency (kills the degraded-backend grind regime). Each check is a `Test`-shaped body on any runner + a `name` + a `timeout` (default 10s). **No `eventually:` / `capture:`** (validation-rejected). First failure → `PREFLIGHT FAILED: <name>` + diagnostics, non-zero exit, **zero groups run**. Passing runs print `preflight: N checks passed`. `--skip-preflight` bypasses; `--dry-run` lists them. Silently ignored by a pre-0.8.0 binary → lint **W006** + the header line make that detectable.
+
+```yaml
+preflight:
+  - name: db-reachable
+    runner: sql
+    sql: "SELECT 1;"
+    assert: { last_exit_code: 0 }
+```
+
+### Run lock
+
+Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock`. A second concurrent run for the same product **exits code 2** naming the product + lock path. flock self-releases on process death (incl. SIGKILL) — no stale-lock protocol. `--no-lock` bypasses. `REGRUN_RUNS_DIR` must be local (flock is unreliable over NFS).
 
 ## Failure Diagnostics (default) & Run Artifacts
 
@@ -333,6 +377,7 @@ regrun lint tests/regression/ --budget-floor 90 --allow-positional '06_*.yaml'
 | W003 | warn | `eventually:` ceiling below the budget floor (default 75s) |
 | W004 | warn | POST/create-shaped test with no `{{RUN_ID}}`/`{{timestamp}}` (4xx tests skipped) |
 | W005 | warn | Cleanup-flagged group references a variable captured in another group |
+| W006 | warn | Suite directory declares no `preflight:` block in any file (missing dependency-health probes) |
 
 **CI endpoint overrides** (override `meta.endpoint` / `meta.mcp_endpoint` for all files):
 
@@ -352,7 +397,7 @@ REGRUN_MCP_ENDPOINT=http://mcp:8000 regrun run tests/regression/
 | `REGRUN_WS_TIMEOUT` | 30 | WebSocket default timeout (seconds) |
 | `REGRUN_VERBOSE` | false | Log request/response bodies |
 
-**Exit codes:** 0 = all passed, 1 = any failure or error.
+**Exit codes:** 0 = all passed, 1 = any failure/error/preflight abort, 2 = run-lock contention (another run for this product is in progress).
 
 ---
 

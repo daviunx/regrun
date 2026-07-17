@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-17
+
+### Added
+
+- **`sql` runner.** A first-class runner for Postgres statements that absorbs the psql half of the fleet's hand-rolled bash steps and resolves the docker-exec-vs-direct-psql dispatch once, in Python — no more copy-pasting the `command -v docker && docker info` guard into every suite. Declare `meta.sql_connection` (`docker_container`, `docker_user`, `database`, `fallback_dsn` — all Jinja-renderable, preserving the product-prefixed env convention) and put SQL in a test's `sql:` field. The runner probes for docker (`shutil.which` + `docker info`, cached per run) → `docker exec -i {container} psql -U {user} -d {db}`, else `psql {fallback_dsn}`; every invocation carries `-v ON_ERROR_STOP=1 -q -t -A` and receives the statement on stdin. Stdout is parsed JSON-or-string exactly like the bash runner, so `contains` / `json_path` on `to_jsonb(...)` output transfer 1:1. **No new DB driver dependency** — it shells out to `psql` just as the bash steps did. Scope is SQL only: app-command exec steps and OpenSearch curl steps stay `runner: bash`. `RequestEcho.sql` echoes the rendered statement into failure diagnostics.
+- **`preflight:` dependency-health checks.** A top-level `preflight:` block lists read-only probes (a `Test`-shaped body on any runner + a `name` + a `timeout` defaulting to 10s) that run once, before any group, and abort the whole run in seconds naming the failed dependency — killing the degraded-backend grind regime. Checks are collected across all loaded files in file order; the first failure prints `PREFLIGHT FAILED: <name>` + diagnostics and exits non-zero having executed zero groups. `eventually:` and `capture:` are rejected at validation (a health probe must not retry a degraded backend into looking healthy, nor feed run state). `--skip-preflight` bypasses; `--dry-run` lists the checks; a passing run's report header prints `preflight: N checks passed`.
+- **Per-product run lock.** Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock` for its duration, mechanically enforcing the sweep-first no-concurrency assumption. A second concurrent run for the same product exits code 2 naming the product + lock path. flock self-releases on process death (incl. SIGKILL) — no stale-lock protocol. `--no-lock` bypasses. An unusable runs dir degrades to running unlocked (best-effort), never a crash.
+- **Lint rule W006 (warn).** The suite directory declares no `preflight:` block in any file — a missing-dependency-health-probes adoption nudge, complementing the `preflight: N checks` report header so a suite silently ignoring preflight on an old pin stays detectable.
+
+### Compatibility
+
+- `runner: sql` **hard-fails to parse on a pre-0.8.0 binary** (Literal enforcement) — a suite may adopt it only after its CI pin is ≥ 0.8.0. This release migrates no suite YAML; pin bumps and step migration ride sibling consumer tasks.
+- `preflight:` is **silently ignored by a pre-0.8.0 binary** (unknown key), mitigated by lint W006 + the `preflight:` report header line.
+
 ## [0.7.0] - 2026-07-16
 
 ### Added

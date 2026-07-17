@@ -37,6 +37,9 @@ class RequestEcho(BaseModel):
     # bash
     commands: list[str] | None = None
 
+    # sql
+    sql: str | None = None
+
     # websocket
     send: Any = None
     wait_for: str | None = None
