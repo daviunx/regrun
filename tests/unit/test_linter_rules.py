@@ -488,6 +488,184 @@ def test_w004_mcp_create_args(tmp_path: Path) -> None:
     assert "W004" in _rules(lint_directory(tmp_path))
 
 
+def test_w004_skips_mcp_read_get_with_slug(tmp_path: Path) -> None:
+    # An MCP READ (`action: get`) that happens to carry a `slug` filter arg is
+    # not a create — W004 must not fire (real-world NTX.2 false positive).
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "get one",
+                            "tool": "company_get",
+                            "args": {"action": "get", "slug": "some-fixed-slug"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.slug": {"exists": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_mcp_read_list_with_name(tmp_path: Path) -> None:
+    # An MCP READ (`action: list`) with a `name` filter arg is not a create —
+    # W004 must not fire (real-world PV.3 false positive).
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "list filtered",
+                            "tool": "company_list",
+                            "args": {"action": "list", "name": "filter-value"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.items": {"exists": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_mcp_negative_is_error_test(tmp_path: Path) -> None:
+    # An MCP negative test (asserts `is_error: true`) carrying a create-ish key
+    # is not exercising the create path — W004 must not fire. HTTP-status 4xx
+    # negatives are already skipped; MCP is_error negatives are the same case.
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "rejects bad input",
+                            "tool": "company_manage",
+                            "args": {"name": "no-run-id-here"},
+                            "assert": {"is_error": True},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_still_fires_on_mcp_create_action_guard(tmp_path: Path) -> None:
+    # GUARD: a genuine MCP create (`action: create`) with no {{RUN_ID}} MUST
+    # still trip W004 — proves the read/negative carve-outs don't neuter it.
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "create one",
+                            "tool": "company_manage",
+                            "args": {"action": "create", "name": "no-run-id-here"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.id": {"exists": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_mcp_update_restore_with_slug(tmp_path: Path) -> None:
+    # An MCP in-place mutation (`action: update`) restoring a seeded row by its
+    # fixed slug is not a create — W004 must not fire (real-world PV.5/NTX.15).
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "restore seeded row",
+                            "tool": "providers_manage",
+                            "args": {"action": "update", "slug": "anthropic", "display_name": "Anthropic"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.slug": {"equals": "anthropic"}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_mcp_list_missing_with_locale(tmp_path: Path) -> None:
+    # `action: list_missing` is a read/diagnostic, not a create — W004 must not
+    # fire (real-world MP.5/MP.6/NTX.18/NTX.20).
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "list missing translations",
+                            "tool": "translations_manage",
+                            "args": {"action": "list_missing", "entity_type": "post", "locale": "es"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.items": {"exists": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
 # --------------------------------------------------------------------------- W005
 
 

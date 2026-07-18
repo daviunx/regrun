@@ -25,8 +25,11 @@ W002 warn ``equals``/``contains`` on a positional array json_path (``[0]`` /
 W003 warn An ``eventually:`` poll whose worst-case ceiling is below the
           budget floor (default 75s) — under-budgeted async poll.
 W004 warn A POST/create-shaped test whose body/args carry no ``{{RUN_ID}}``
-          / ``{{timestamp}}`` — missing per-run uniqueness. 4xx-asserting
-          (negative) tests are skipped.
+          / ``{{timestamp}}`` — missing per-run uniqueness. Create-shaped =
+          POST, or an ``args.action`` in the create allowlist (create/add/…),
+          or (no action) a name/slug/title/email arg. Negative tests (HTTP 4xx
+          OR MCP ``is_error: true``) and non-create ``action:`` verbs (reads
+          get/list/…, mutations update/delete, diagnostics) are skipped.
 W005 warn A cleanup-flagged group references a variable captured in ANOTHER
           group of the same file — capture-dependent sweep (should be
           pattern-based / capture-independent).
@@ -51,6 +54,15 @@ _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 _TEST_ID_RE = re.compile(r'^\s*-?\s*id:\s*["\']?([A-Za-z][A-Za-z0-9_.\-]*)')
 _ALLOW_POSITIONAL = "# lint: allow-positional"
 _CREATE_KEY_HINTS = ("name", "slug", "title", "email")
+# Multiplex WRITE actions that CREATE a new persistent row — the only case where
+# per-run uniqueness (W004) applies. When a test's ``args.action`` names one of
+# these it is create-shaped; EVERY other explicit action verb targets an existing
+# entity or returns data — reads (get/list/list_missing/search/stats/…), in-place
+# mutations (update/delete/restore), diagnostics — so W004 does NOT apply, even if
+# the args carry a ``name``/``slug`` key (real-world NTX.2 get / PV.5 update-restore
+# / MVL.2 list / MP.4 stats false positives). Discrete create tools (``tool_create``
+# etc.) carry no ``action`` arg and fall through to the ``name``/``slug`` hint check.
+_CREATE_ACTIONS = frozenset({"create", "add", "insert", "register", "new", "upsert"})
 
 
 class LintFinding(BaseModel):
@@ -101,15 +113,31 @@ def _is_create_shaped(test: dict) -> bool:
         return True
     args = test.get("args")
     if isinstance(args, dict):
+        # An explicit ``action`` verb governs: only a genuine create verb is
+        # create-shaped. Reads (get/list/…), in-place mutations (update/delete),
+        # and diagnostics never create a per-run row, so W004 does not apply even
+        # when they carry a name/slug filter/target arg.
+        action = args.get("action")
+        if isinstance(action, str) and action.strip():
+            return action.strip().lower() in _CREATE_ACTIONS
         return any(any(h in str(k).lower() for h in _CREATE_KEY_HINTS) for k in args)
     return False
 
 
-def _asserts_4xx(test: dict) -> bool:
+def _is_negative_test(test: dict) -> bool:
+    """A negative/expected-failure test — skipped by W004.
+
+    Covers BOTH an HTTP 4xx status assertion (api layer) AND an MCP
+    ``is_error: true`` assertion (mcp layer). A negative test intentionally
+    rejects its input, so it exercises no create path and needs no per-run
+    uniqueness.
+    """
     assertion = test.get("assert") or {}
     status = assertion.get("status")
     values = status if isinstance(status, list) else [status]
-    return any(isinstance(s, int) and 400 <= s < 500 for s in values)
+    if any(isinstance(s, int) and 400 <= s < 500 for s in values):
+        return True
+    return assertion.get("is_error") is True
 
 
 def _map_test_line_ranges(text: str) -> tuple[list[str], dict[str, tuple[int, int]]]:
@@ -251,7 +279,7 @@ def _lint_file(
                     )
 
             # W004 — create-shaped test missing per-run uniqueness
-            if _is_create_shaped(t) and not _asserts_4xx(t):
+            if _is_create_shaped(t) and not _is_negative_test(t):
                 payload = list(_iter_strings(t.get("body"))) + list(_iter_strings(t.get("args")))
                 if not any(("{{RUN_ID}}" in s or "{{timestamp}}" in s) for s in payload):
                     findings.append(

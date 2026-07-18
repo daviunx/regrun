@@ -1,6 +1,6 @@
 [project]
 name = "regrun"
-version = "0.8.0"
+version = "0.8.1"
 description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
 authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
 readme = "README.md"
