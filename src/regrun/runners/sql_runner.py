@@ -105,8 +105,15 @@ class SqlRunner:
             user = variables.render_string(self._conn.docker_user)
             database = variables.render_string(self._conn.database)
             return [
-                "docker", "exec", "-i", container,
-                "psql", "-U", user, "-d", database,
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "psql",
+                "-U",
+                user,
+                "-d",
+                database,
                 *_PSQL_FLAGS,
             ]
         fallback_dsn = variables.render_string(self._conn.fallback_dsn)
@@ -125,7 +132,8 @@ class SqlRunner:
         if shutil.which("docker") is not None:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "docker", "info",
+                    "docker",
+                    "info",
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
@@ -137,7 +145,9 @@ class SqlRunner:
         self._docker_available = available
         return available
 
-    async def _run_psql(self, argv: list[str], statement: str, timeout: int) -> tuple[str, str, int]:
+    async def _run_psql(
+        self, argv: list[str], statement: str, timeout: int
+    ) -> tuple[str, str, int]:
         """Run one psql invocation, feeding ``statement`` on stdin.
 
         Returns ``(stdout, stderr, exit_code)``.

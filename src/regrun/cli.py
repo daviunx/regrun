@@ -162,7 +162,9 @@ def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
     click.echo("\n  DRY RUN - Test Plan")
     click.echo("  " + "=" * 40)
 
-    preflight_checks = [(path, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])]
+    preflight_checks = [
+        (path, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])
+    ]
     if preflight_checks:
         click.echo(f"\n  Preflight ({len(preflight_checks)} checks):")
         for path, chk in preflight_checks:

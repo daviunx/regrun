@@ -155,7 +155,9 @@ async def _run_preflight(
     carrying the executed count and, on the first failure, the failing result —
     the caller aborts the run without executing any group.
     """
-    checks = [(path, tf, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])]
+    checks = [
+        (path, tf, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])
+    ]
     if not checks:
         return None
 
