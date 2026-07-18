@@ -27,9 +27,13 @@ W003 warn An ``eventually:`` poll whose worst-case ceiling is below the
 W004 warn A POST/create-shaped test whose body/args carry no ``{{RUN_ID}}``
           / ``{{timestamp}}`` — missing per-run uniqueness. Create-shaped =
           POST, or an ``args.action`` in the create allowlist (create/add/…),
-          or (no action) a name/slug/title/email arg. Negative tests (HTTP 4xx
-          OR MCP ``is_error: true``) and non-create ``action:`` verbs (reads
-          get/list/…, mutations update/delete, diagnostics) are skipped.
+          or (no action) a name/slug/title/email arg. Skipped: negative tests
+          (HTTP 4xx OR MCP ``is_error: true``); non-create ``action:`` verbs
+          (reads get/list/…, mutations update/delete, diagnostics); and HTTP
+          POSTs that are not creates — search/query endpoints, auth endpoints
+          (login/auth/token), delete endpoints (``…delete``), and bodyless
+          POSTs. Irreducible creates (server-derived name / key-hint on a
+          non-create tool) suppress per-test with ``# lint: allow-nocreate``.
 W005 warn A cleanup-flagged group references a variable captured in ANOTHER
           group of the same file — capture-dependent sweep (should be
           pattern-based / capture-independent).
@@ -53,7 +57,18 @@ _BUILTIN_VARS = {"RUN_ID", "timestamp", "date", "uuid"}
 _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 _TEST_ID_RE = re.compile(r'^\s*-?\s*id:\s*["\']?([A-Za-z][A-Za-z0-9_.\-]*)')
 _ALLOW_POSITIONAL = "# lint: allow-positional"
+_ALLOW_NOCREATE = "# lint: allow-nocreate"
 _CREATE_KEY_HINTS = ("name", "slug", "title", "email")
+# HTTP POST path-SEGMENT exemptions for W004 — a POST is create-shaped by
+# default, but these segment classes are NOT creates and carry no per-run row:
+#   * search / query — a read (semantic/keyword/hybrid search, ad-hoc query)
+#   * login / auth / token — an auth exchange with FIXED credentials
+# Matched as whole '/'-split segments (case-folded), never as substrings, so
+# ``/searchable-widgets`` or ``/oauthorize-foo`` do NOT trip. Delete endpoints
+# use a segment-CONTAINS check (``bulk-delete`` / ``.../delete``) because the
+# verb rides a compound segment; bodyless POSTs are handled separately.
+_SEARCH_SEGMENTS = frozenset({"search", "_search", "query"})
+_AUTH_SEGMENTS = frozenset({"login", "auth", "token"})
 # Multiplex WRITE actions that CREATE a new persistent row — the only case where
 # per-run uniqueness (W004) applies. When a test's ``args.action`` names one of
 # these it is create-shaped; EVERY other explicit action verb targets an existing
@@ -108,9 +123,32 @@ def _iter_strings(obj):
             yield from _iter_strings(v)
 
 
+def _http_post_is_noncreate(test: dict) -> bool:
+    """An HTTP POST that is NOT a create → exempt from W004.
+
+    Conservative, path-segment based (not substring soup):
+      1. search / query endpoint (segment ``search``/``_search``/``query``) —
+         a read, not a create.
+      2. auth endpoint (segment ``login``/``auth``/``token``) — a fixed-
+         credential exchange, no per-run row.
+      3. delete endpoint (any segment CONTAINS ``delete``: ``bulk-delete`` /
+         ``.../delete``) — delete semantics, not create.
+      4. bodyless POST (no ``body`` and no ``json``) — an action toggle with
+         nothing to carry a ``{{RUN_ID}}``.
+    """
+    segments = [s.lower() for s in str(test.get("path") or "").split("/") if s]
+    if any(s in _SEARCH_SEGMENTS for s in segments):
+        return True
+    if any(s in _AUTH_SEGMENTS for s in segments):
+        return True
+    if any("delete" in s for s in segments):
+        return True
+    return test.get("body") is None and test.get("json") is None
+
+
 def _is_create_shaped(test: dict) -> bool:
     if (test.get("method") or "").upper() == "POST":
-        return True
+        return not _http_post_is_noncreate(test)
     args = test.get("args")
     if isinstance(args, dict):
         # An explicit ``action`` verb governs: only a genuine create verb is
@@ -163,16 +201,22 @@ def _map_test_line_ranges(text: str) -> tuple[list[str], dict[str, tuple[int, in
     return lines, ranges
 
 
-def _positional_suppressed(
+def _span_has_marker(
     test_id: str,
     lines: list[str],
     ranges: dict[str, tuple[int, int]],
+    marker: str,
 ) -> bool:
+    """True if ``marker`` appears on any source line within the test's span.
+
+    The shared span-scan mechanism behind the inline suppression comments
+    (``# lint: allow-positional`` for W002, ``# lint: allow-nocreate`` for W004).
+    """
     span = ranges.get(test_id)
     if span is None:
         return False
     start, end = span
-    return any(_ALLOW_POSITIONAL in line for line in lines[start:end])
+    return any(marker in line for line in lines[start:end])
 
 
 def _lint_file(
@@ -250,7 +294,9 @@ def _lint_file(
                     positional = "[0]" in jp or "[*]" in jp
                     fragile_op = "equals" in cond or "contains" in cond
                     if positional and fragile_op:
-                        if file_allows or _positional_suppressed(tid, lines, id_ranges):
+                        if file_allows or _span_has_marker(
+                            tid, lines, id_ranges, _ALLOW_POSITIONAL
+                        ):
                             continue
                         op = "equals" if "equals" in cond else "contains"
                         findings.append(
@@ -278,10 +324,14 @@ def _lint_file(
                         )
                     )
 
-            # W004 — create-shaped test missing per-run uniqueness
+            # W004 — create-shaped test missing per-run uniqueness. An inline
+            # ``# lint: allow-nocreate`` escape-hatches the irreducible cases
+            # (server-derived identifier, key-hint on a non-create tool).
             if _is_create_shaped(t) and not _is_negative_test(t):
                 payload = list(_iter_strings(t.get("body"))) + list(_iter_strings(t.get("args")))
-                if not any(("{{RUN_ID}}" in s or "{{timestamp}}" in s) for s in payload):
+                has_unique = any(("{{RUN_ID}}" in s or "{{timestamp}}" in s) for s in payload)
+                suppressed = _span_has_marker(tid, lines, id_ranges, _ALLOW_NOCREATE)
+                if not has_unique and not suppressed:
                     findings.append(
                         LintFinding(
                             file=fname,

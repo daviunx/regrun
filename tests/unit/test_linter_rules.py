@@ -666,6 +666,200 @@ def test_w004_skips_mcp_list_missing_with_locale(tmp_path: Path) -> None:
     assert "W004" not in _rules(lint_directory(tmp_path))
 
 
+# --- W004 HTTP-side exemptions (0.8.2) ------------------------------------
+
+
+def _post_test(tid: str, path: str, body: dict | None) -> dict:
+    t: dict = {"id": tid, "name": tid, "method": "POST", "path": path, "assert": {"status": 200}}
+    if body is not None:
+        t["body"] = body
+    return t
+
+
+def test_w004_skips_search_post(tmp_path: Path) -> None:
+    # HTTP POST to a `search` endpoint is a query, not a create — no per-run
+    # uniqueness applies (gnosari A4.8-10 / K6.1-6.4 / K7.1-7.2 false positives).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        _post_test(
+                            "A.1",
+                            "/api/v1/knowledge/documents/search",
+                            {"query": "documentation", "mode": "hybrid", "limit": 10},
+                        )
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_underscore_search_and_query_post(tmp_path: Path) -> None:
+    # `_search` (OpenSearch convention) and a `query` segment are both reads.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        _post_test("A.1", "/entities/_search", {"q": "x"}),
+                        _post_test("A.2", "/api/v1/query", {"q": "y"}),
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_login_post(tmp_path: Path) -> None:
+    # HTTP POST to an auth endpoint uses fixed credentials, not a per-run row
+    # (gnosari P.2 login false positive).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        _post_test(
+                            "A.1",
+                            "/api/v1/login/access-token",
+                            {"email": "known@example.com", "password": "fixed-pass"},
+                        )
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_oauth_token_post(tmp_path: Path) -> None:
+    # A `token` segment (e.g. /oauth/token) is an auth exchange, not a create.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [_post_test("A.1", "/oauth/token", {"grant_type": "password"})],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_bulk_delete_post(tmp_path: Path) -> None:
+    # HTTP POST to a bulk/targeted delete endpoint has delete semantics, not
+    # create (gnosari BD.11/14/17 bulk-delete false positives).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        _post_test(
+                            "A.1",
+                            "/api/v1/entities/bulk-delete",
+                            {"entity_ids": ["a", "b", "c"]},
+                        )
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_skips_bodyless_post(tmp_path: Path) -> None:
+    # A bodyless HTTP POST (action toggle) carries nothing to hold a RUN_ID
+    # (gnosari A21.2 set-default / A21.5 clear-default false positives).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [_post_test("A.1", "/api/v1/chat-themes/xyz/set-default", None)],
+                }
+            ]
+        ),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_allow_nocreate_suppression(tmp_path: Path) -> None:
+    # Inline `# lint: allow-nocreate` escape hatch suppresses W004 on an
+    # irreducible create (server-derived name, key-hint on an update tool).
+    (tmp_path / "01_api.yaml").write_text(
+        "meta:\n  product: demo\n  layer: api\n  runner: httpx\n"
+        "groups:\n  - id: 5\n    name: A\n    tests:\n"
+        "      - id: A.1  # lint: allow-nocreate — server derives name\n"
+        "        name: t\n        method: POST\n        path: /api/v1/knowledge\n"
+        "        body:\n          data_type: auto\n        assert:\n          status: 201\n"
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_still_fires_on_genuine_create_post_guard(tmp_path: Path) -> None:
+    # GUARD: a genuine HTTP POST create (non-exempt path, body with a name,
+    # no {{RUN_ID}}) MUST still trip W004 — the carve-outs don't neuter it.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [_post_test("A.1", "/api/v1/tools", {"name": "my-tool"})],
+                }
+            ]
+        ),
+    )
+    assert "W004" in _rules(lint_directory(tmp_path))
+
+
+def test_w004_search_match_is_segment_exact_not_substring_guard(tmp_path: Path) -> None:
+    # GUARD: `search` is matched as a whole path SEGMENT, not a substring — a
+    # POST creating a `searchable-widgets` resource still fires (no substring soup).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [_post_test("A.1", "/api/v1/searchable-widgets", {"name": "w"})],
+                }
+            ]
+        ),
+    )
+    assert "W004" in _rules(lint_directory(tmp_path))
+
+
 # --------------------------------------------------------------------------- W005
 
 
