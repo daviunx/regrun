@@ -138,6 +138,12 @@ class FastMcpRunner:
         ``raise_on_error=False`` so a tool returning ``is_error: true`` yields a
         result (with its content) for assertion, instead of raising.
         """
+        # ``execute`` already returns an error RunnerResponse when ``tool`` is
+        # falsy (see the guard at the top of this class), so this is unreachable
+        # -- it exists to narrow ``str | None`` to ``str`` for the type checker
+        # without duplicating the guard's error-response contract.
+        assert test.tool is not None, "execute() guards against a missing 'tool'"
+
         client = await self._client_for(auth_key)
         return await client.call_tool(
             test.tool,
@@ -190,14 +196,16 @@ class FastMcpRunner:
         return variables.render_string(auth_config.token)
 
 
-def _embed_is_error(body: dict | str | None, is_error: bool) -> dict | str | None:
+def _embed_is_error(body: dict | list | str | None, is_error: bool) -> dict | str | None:
     """Embed the ``is_error`` flag into the response body for the assertion engine.
 
     The assertion engine's ``_evaluate_is_error`` looks for an ``is_error`` key
     inside the response body dict. This ensures the key is present regardless of
     the MCP response pattern.
 
-    If body is not a dict (string or None), wraps it in a dict to carry the flag.
+    If body is not a dict (list, string or None), wraps it in a dict to carry
+    the flag -- a list body lands in ``_raw_text`` alongside the flag, same as a
+    plain-string error body.
     """
     if isinstance(body, dict):
         # Only set if not already present (don't overwrite tool-level is_error)
