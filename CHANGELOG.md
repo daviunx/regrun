@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Type checking and coverage enforcement.** mypy is now a blocking CI job at default strictness, with `plugins = ["pydantic.mypy"]` and `python_version = "3.11"` (tracking the package's minimum `requires-python`, not the newest interpreter). The coverage floor moved from `fail_under = 38` — 34 points below actual — to `70`, matching measured branch coverage rounded down.
 - Lint scope widened from `src/` to `src/ tests/`.
 
+### Security
+
+- **Every third-party GitHub Action is now pinned to a full commit SHA.** `pypa/gh-action-pypi-publish@release/v1` was a *branch* ref executing inside the only job that holds `id-token: write` — the OIDC credential authorised to publish to pypi.org as regrun. A force-push or upstream compromise on that branch would have run attacker-controlled code holding that credential, publishing a backdoored package to everyone who installs it. `actions/checkout`, `actions/setup-python` and the three `docker/*` actions are pinned for the same reason. There is no lock file for GitHub Actions — the SHA in the workflow is the only pin that exists.
+- **Build is now isolated from publish.** `python -m build` downloads and executes the build backend (`poetry-core`, unpinned and unhashed) from PyPI, and previously did so in the same job as the OIDC mint. It now runs in a separate job carrying no `id-token`, handing over a `dist` artifact; the publish job checks out nothing and runs only the download + upload steps.
+- `persist-credentials: false` on every checkout — the default writes `GITHUB_TOKEN` into `.git/config`, where later steps (including fork-authored test code on a public repo) can read it.
+
 ### Docs
 
 - `README.md` said "Requires Python 3.12 or later" while `requires-python` declared `>=3.11` and CI tested 3.11. The packaging metadata is the contract pip and PyPI enforce, so the README was corrected to 3.11+ rather than narrowing support and breaking consumers already resolving on 3.11.
