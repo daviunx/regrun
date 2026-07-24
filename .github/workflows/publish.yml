@@ -5,18 +5,50 @@ on:
     tags:
       - "v*.*.*"
 
+# Workflow-level floor. Without this block the called `test` workflow would
+# inherit the REPOSITORY default (Settings -> Actions -> Workflow permissions),
+# which is not visible in this file and may still be the legacy read/write.
 permissions:
-  id-token: write
+  contents: read
 
 jobs:
+  # The release gate. A tag push does not trigger test.yml on its own (that
+  # fires on push-to-main / pull_request), so without this the tag pipeline
+  # would publish code no job had ever tested.
+  #
+  # This deliberately deviates from the fleet convention in
+  # documentation/standards/infrastructure/library-publishing.md:177 ("tag
+  # pipelines are not re-linted"). That convention is safe on GitLab only
+  # because the branch pipeline already tested the SHA. regrun publishes to
+  # PUBLIC PyPI, where a bad cut is irreversible -- a version can be yanked but
+  # never reused -- and its release is the fleet's regression-gate binary. The
+  # `needs: [test]` shape already exists in that same standard's TypeScript
+  # path (L271, L283-284). Do not "correct" this back to an ungated release.
+  test:
+    name: Test gate
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
   publish:
     name: Build and publish to PyPI
+    needs: [test]
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/project/regrun/
+    # A job-level `permissions:` block REPLACES the default set -- every scope
+    # not listed becomes `none`. `contents: read` is therefore required, not
+    # optional: without it actions/checkout below loses repo read and the
+    # release pipeline goes red. `id-token: write` (the OIDC mint for PyPI
+    # trusted publishing) is scoped to this job alone.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
