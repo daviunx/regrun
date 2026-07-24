@@ -80,10 +80,14 @@ class EventuallyConfig(BaseModel):
 
     model_config = ConfigDict(strict=False)
 
-    max_attempts: int = 10
-    interval: float = 2.0  # seconds between attempts
-    backoff: float = 1.0  # multiplier (1.0 = fixed interval)
-    initial_delay: float = 0.0  # optional wait before the first attempt
+    # ge=1 is load-bearing, not cosmetic. At 0 the retry loop body never runs,
+    # run_with_retry returns (None, []), and the executor's
+    # `all_passed = all(assertion_results)` is True on an empty list -- the test
+    # reports PASSED having evaluated ZERO assertions.
+    max_attempts: int = Field(default=10, ge=1)
+    interval: float = Field(default=2.0, ge=0.0)  # seconds between attempts
+    backoff: float = Field(default=1.0, ge=0.0)  # multiplier (1.0 = fixed interval)
+    initial_delay: float = Field(default=0.0, ge=0.0)  # optional wait before the first attempt
 
 
 class WebSocketConfig(BaseModel):
