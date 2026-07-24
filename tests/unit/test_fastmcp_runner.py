@@ -76,7 +76,9 @@ def _install(monkeypatch, script, auth_configs=None) -> FastMcpRunner:
 
 
 def _test(tool="tasks_create", args=None, auth=None) -> models.Test:
-    return models.Test(id="T1", name="t", tool=tool, args=args or {}, auth=auth, assert_=Assertion())
+    return models.Test(
+        id="T1", name="t", tool=tool, args=args or {}, auth=auth, assert_=Assertion()
+    )
 
 
 def test_flat_dict_body(monkeypatch):
@@ -88,7 +90,9 @@ def test_flat_dict_body(monkeypatch):
 
 
 def test_envelope_unwrapped(monkeypatch):
-    runner = _install(monkeypatch, lambda n, a: _Result('{"success": true, "data": {"task": {"id": "e"}}}'))
+    runner = _install(
+        monkeypatch, lambda n, a: _Result('{"success": true, "data": {"task": {"id": "e"}}}')
+    )
     resp = asyncio.run(runner.execute(_test(), VariableStore()))
     # envelope {success,data} must unwrap to data so $.task.id resolves
     assert resp.body["task"]["id"] == "e"
@@ -96,7 +100,9 @@ def test_envelope_unwrapped(monkeypatch):
 
 
 def test_string_wrapped_parsed(monkeypatch):
-    runner = _install(monkeypatch, lambda n, a: _Result('{"result": "{\\"task\\": {\\"id\\": \\"s\\"}}"}'))
+    runner = _install(
+        monkeypatch, lambda n, a: _Result('{"result": "{\\"task\\": {\\"id\\": \\"s\\"}}"}')
+    )
     resp = asyncio.run(runner.execute(_test(), VariableStore()))
     assert resp.body["task"]["id"] == "s"
 

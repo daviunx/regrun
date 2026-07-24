@@ -1,6 +1,6 @@
 [project]
 name = "regrun"
-version = "0.8.2"
+version = "0.8.3"
 description = "YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands"
 authors = [{name = "David Marsa", email = "david.marsa@neomanex.com"}]
 readme = "README.md"
@@ -46,13 +46,60 @@ line-length = 100
 [dependency-groups]
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
-    "pytest-cov (>=6.0.0,<7.0.0)"
+    "pytest-cov (>=6.0.0,<7.0.0)",
+    "mypy (>=1.13,<3.0)",
+    "types-PyYAML (>=6.0,<7.0)"
+]
+
+[tool.mypy]
+# Tracks the package's MINIMUM supported runtime (requires-python = ">=3.11"),
+# not the fleet template's 3.12 — pinning 3.12 here would silently green-light
+# 3.12-only constructs in a package that promises to run on 3.11.
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# DEVIATION from documentation/standards/python/03-tooling.md (`strict = true`).
+# Default strictness is clean (0 errors); --strict reports 69, ~50 of them
+# mechanical [type-arg] bare generics. Landing blocking-at-default now beats an
+# advisory strict job nobody actions. Ratchet to strict: task 5500a359.
+strict = false
+
+# Genuine third-party packages shipping no py.typed and having no stubs on
+# PyPI. NEVER add first-party `regrun.*` here -- that degrades the whole package
+# to Any and mypy passes while checking nothing
+# (documentation/standards/python/03-tooling.md, incident 2026-07-17).
+# PyYAML is NOT listed: real stubs exist and are installed via types-PyYAML.
+[[tool.mypy.overrides]]
+module = ["jsonpath_ng.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+markers = [
+    "slow: slow tests",
+    "integration: integration tests",
 ]
 
 [tool.coverage.run]
 source = ["regrun"]
 branch = true
+# ["greenlet", "thread"] per the standard would ConfigError — greenlet is not a
+# dependency of this package. Thread alone covers the asyncio.run / subprocess
+# paths in the runners.
+concurrency = ["thread"]
+omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
-# Current measured floor (branch coverage). Raise toward 80 as suites grow.
-fail_under = 38
+show_missing = true
+# Measured floor per testing/overview.md § Coverage Enforcement (ratchet: only
+# goes UP, rounded down to nearest 5). Raising toward the 80 target: task ac0e9586.
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

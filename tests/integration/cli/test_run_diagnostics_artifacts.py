@@ -27,7 +27,9 @@ from click.testing import CliRunner
 from regrun.cli import cli
 
 PRODUCT = "diag"
-POINTER_RE = re.compile(r"Full report: (?P<txt>.+/report\.txt) \(json: report\.json, junit: junit\.xml\)")
+POINTER_RE = re.compile(
+    r"Full report: (?P<txt>.+/report\.txt) \(json: report\.json, junit: junit\.xml\)"
+)
 TS_DIR_RE = re.compile(r"^\d{8}-\d{6}")
 
 

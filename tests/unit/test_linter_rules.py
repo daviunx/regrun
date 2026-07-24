@@ -622,7 +622,11 @@ def test_w004_skips_mcp_update_restore_with_slug(tmp_path: Path) -> None:
                             "id": "M.1",
                             "name": "restore seeded row",
                             "tool": "providers_manage",
-                            "args": {"action": "update", "slug": "anthropic", "display_name": "Anthropic"},
+                            "args": {
+                                "action": "update",
+                                "slug": "anthropic",
+                                "display_name": "Anthropic",
+                            },
                             "assert": {
                                 "is_error": False,
                                 "json_path": {"$.slug": {"equals": "anthropic"}},
@@ -652,7 +656,11 @@ def test_w004_skips_mcp_list_missing_with_locale(tmp_path: Path) -> None:
                             "id": "M.1",
                             "name": "list missing translations",
                             "tool": "translations_manage",
-                            "args": {"action": "list_missing", "entity_type": "post", "locale": "es"},
+                            "args": {
+                                "action": "list_missing",
+                                "entity_type": "post",
+                                "locale": "es",
+                            },
                             "assert": {
                                 "is_error": False,
                                 "json_path": {"$.items": {"exists": True}},
@@ -953,7 +961,9 @@ def test_w006_no_preflight_in_suite_flagged(tmp_path: Path) -> None:
                 {
                     "id": 5,
                     "name": "A",
-                    "tests": [{"id": "A.1", "name": "t", "method": "GET", "assert": {"status": 200}}],
+                    "tests": [
+                        {"id": "A.1", "name": "t", "method": "GET", "assert": {"status": 200}}
+                    ],
                 }
             ]
         ),
