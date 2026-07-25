@@ -25,7 +25,11 @@ W002 warn ``equals``/``contains`` on a positional array json_path (``[0]`` /
 W003 warn An ``eventually:`` poll whose worst-case ceiling is below the
           budget floor (default 75s) — under-budgeted async poll.
 W004 warn A POST/create-shaped test whose body/args carry no ``{{RUN_ID}}``
-          / ``{{timestamp}}`` — missing per-run uniqueness. Create-shaped =
+          and no reference to a RUN-SCOPED declared variable (one whose
+          declaration derives from ``{{timestamp}}``/``{{uuid}}``/RUN_ID).
+          An INLINE ``{{timestamp}}`` no longer satisfies it: the builtin is
+          recomputed per render, so the value exists nowhere in the store —
+          uncapturable AND unsweepable. Create-shaped =
           POST, or an ``args.action`` in the create allowlist (create/add/…),
           or (no action) a name/slug/title/email arg. Skipped: negative tests
           (HTTP 4xx OR MCP ``is_error: true``); non-create ``action:`` verbs
@@ -39,6 +43,25 @@ W005 warn A cleanup-flagged group references a variable captured in ANOTHER
           pattern-based / capture-independent).
 W006 warn The suite directory declares NO ``preflight:`` block in any file —
           missing dependency-health probes (adoption nudge). Directory-level.
+W007 warn The suite has neither a ``sweep:`` block nor a ``cleanup: true``
+          group sorting BEFORE its first create-shaped test — sweep-first is
+          unenforced, so a crashed run's leftovers greet the next run.
+          Directory-level.
+W008 warn A bash ``cmd`` carries a hardcoded ``http(s)://`` host or a
+          ``psql … -d <name>`` database literal not wrapped in
+          ``{{ env.get(...) }}`` / ``${VAR:-default}`` — the step silently
+          reads the wrong stack instead of failing loud.
+W009 warn A ``json_path`` condition whose ONLY operator is ``exists: true`` —
+          a JSONPath match on ``null`` SATISFIES ``exists``, so the assert
+          passes on the very null the code under test produces. Use
+          ``not_empty`` or a value; suppress per-test for keys that may
+          legitimately be absent with ``# lint: allow-exists``.
+W010 warn A ``$.data.*`` path in ``json_path`` or ``capture`` within an
+          mcp-layer file — MCP asserts/captures run on the POST-normalize
+          body (``data`` is hoisted to top level), so the path never matches.
+W011 warn Best-effort: fixture-name prefixes created by create-shaped tests
+          (``<prefix>{{RUN_ID}}``) that appear in NO sweep step or
+          ``cleanup: true`` group — unswept fixture families. Directory-level.
 ==== ==== ================================================================
 """
 
@@ -58,7 +81,21 @@ _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 _TEST_ID_RE = re.compile(r'^\s*-?\s*id:\s*["\']?([A-Za-z][A-Za-z0-9_.\-]*)')
 _ALLOW_POSITIONAL = "# lint: allow-positional"
 _ALLOW_NOCREATE = "# lint: allow-nocreate"
+_ALLOW_EXISTS = "# lint: allow-exists"
 _CREATE_KEY_HINTS = ("name", "slug", "title", "email")
+# W008: literal-host detection in bash commands. A URL/db literal is
+# parameterized (and exempt) when it sits inside a Jinja ``{{ ... }}`` span
+# (e.g. the DEFAULT of ``{{ env.get('REGRUN_API_ENDPOINT', 'http://…') }}``)
+# or a shell ``${VAR:-default}`` span, or when the host itself is a variable
+# (``http://${API_HOST}/…`` / ``http://{{HOST}}/…``).
+_URL_LITERAL_RE = re.compile(r"https?://")
+_JINJA_SPAN_RE = re.compile(r"\{\{.*?\}\}", re.DOTALL)
+_SHELL_SPAN_RE = re.compile(r"\$\{[^}]*\}")
+_PSQL_DB_RE = re.compile(r"\bpsql\b[^;|&\n]*?\s-d\s+(\S+)")
+# W011: a created-name string ``<prefix>{{RUN_ID}}`` names a fixture family by
+# its prefix (``regr-vis-``); the prefix must appear in some sweep/cleanup
+# delete pattern or the family is unsweepable.
+_FAMILY_PREFIX_RE = re.compile(r"([A-Za-z][A-Za-z0-9._-]*[-_])\{\{\s*RUN_ID\s*\}\}")
 # HTTP POST path-SEGMENT exemptions for W004 — a POST is create-shaped by
 # default, but these segment classes are NOT creates and carry no per-run row:
 #   * search / query — a read (semantic/keyword/hybrid search, ad-hoc query)
@@ -110,6 +147,13 @@ def eventually_ceiling(cfg: dict) -> float:
 def _is_mcp_file(raw: dict) -> bool:
     meta = raw.get("meta") or {}
     return meta.get("runner") == "fastmcp" or meta.get("default_auth") == "mcp"
+
+
+def _is_data_path(path: object) -> bool:
+    """W010: a JSONPath rooted at ``$.data`` (segment-exact — ``$.database`` is not)."""
+    if not isinstance(path, str):
+        return False
+    return path == "$.data" or path.startswith("$.data.") or path.startswith("$.data[")
 
 
 def _iter_strings(obj):
@@ -178,6 +222,72 @@ def _is_negative_test(test: dict) -> bool:
     return assertion.get("is_error") is True
 
 
+def _derived_variables(parsed: list[tuple[Path, dict, str]]) -> set[str]:
+    """Suite-wide set of RUN-SCOPED declared variables (W004).
+
+    A declared variable is run-scoped when its declaration derives — directly
+    or through other declared variables (fixpoint) — from ``{{timestamp}}``,
+    ``{{uuid}}`` or ``RUN_ID``. ``RUN_ID`` itself is always in the set (engine
+    builtin since 0.9.0; suites may still declare it).
+    """
+    declared: dict[str, str] = {}
+    for _path, raw, _text in parsed:
+        for key, value in (raw.get("variables") or {}).items():
+            declared.setdefault(key, str(value))
+
+    derived = {"RUN_ID"}
+    changed = True
+    while changed:
+        changed = False
+        for key, value in declared.items():
+            if key in derived:
+                continue
+            names = set(_VAR_RE.findall(value))
+            if {"timestamp", "uuid"} & names or names & derived:
+                derived.add(key)
+                changed = True
+    return derived
+
+
+def _param_spans(s: str) -> list[tuple[int, int]]:
+    """Character spans of ``{{ … }}`` / ``${ … }`` parameterizations in a string."""
+    return [m.span() for m in _JINJA_SPAN_RE.finditer(s)] + [
+        m.span() for m in _SHELL_SPAN_RE.finditer(s)
+    ]
+
+
+def _in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
+def _bash_hardcoded_literals(cmd: str) -> list[str]:
+    """W008 messages for one bash command: hardcoded URL hosts / psql db targets.
+
+    A literal is exempt when it sits inside a ``{{ … }}`` or ``${ … }`` span
+    (parameterized with a default), or when the host/name itself is a variable.
+    """
+    messages: list[str] = []
+    spans = _param_spans(cmd)
+
+    for m in _URL_LITERAL_RE.finditer(cmd):
+        if _in_spans(m.start(), spans):
+            continue
+        after = cmd[m.end() : m.end() + 2]
+        if after.startswith("$") or after.startswith("{{"):
+            continue  # literal scheme, parameterized host
+        token = re.match(r"\S+", cmd[m.start() :])
+        literal = token.group(0).rstrip("'\"),;") if token else cmd[m.start() :]
+        messages.append(f"hardcoded URL '{literal}'")
+
+    for m in _PSQL_DB_RE.finditer(cmd):
+        name = m.group(1).strip("'\"")
+        if name.startswith("$") or name.startswith("{{") or _in_spans(m.start(1), spans):
+            continue
+        messages.append(f"hardcoded psql database '-d {name}'")
+
+    return messages
+
+
 def _map_test_line_ranges(text: str) -> tuple[list[str], dict[str, tuple[int, int]]]:
     """Map each test id to its ``[start, end)`` line range (0-indexed).
 
@@ -220,13 +330,39 @@ def _span_has_marker(
 
 
 def _lint_file(
-    path: Path, raw: dict, text: str, budget_floor: float, file_allows: bool
+    path: Path,
+    raw: dict,
+    text: str,
+    budget_floor: float,
+    file_allows: bool,
+    derived_vars: set[str],
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
     fname = path.name
+    is_mcp = _is_mcp_file(raw)
     lines, id_ranges = _map_test_line_ranges(text)
 
     groups = raw.get("groups") or []
+
+    # W008 on sweep steps too — a sweep with a hardcoded host sweeps the wrong
+    # stack, which is exactly the failure class the block exists to prevent.
+    for step in raw.get("sweep") or []:
+        if not isinstance(step, dict):
+            continue
+        for bash_cmd in step.get("commands") or []:
+            cmd = bash_cmd.get("cmd") if isinstance(bash_cmd, dict) else None
+            if not isinstance(cmd, str):
+                continue
+            for message in _bash_hardcoded_literals(cmd):
+                findings.append(
+                    LintFinding(
+                        file=fname,
+                        test_id=f"sweep:{step.get('name', '-')}",
+                        rule="W008",
+                        severity=WARN,
+                        message=f"{message} (use {{{{ env.get(...) }}}} or ${{VAR:-default}})",
+                    )
+                )
 
     # E001 — duplicate group ids
     seen: set[int] = set()
@@ -309,6 +445,64 @@ def _lint_file(
                             )
                         )
 
+                    # W009 — exists: true as the ONLY operator: satisfied by a
+                    # null value, so the assert cannot fail on the very null
+                    # the code under test produces.
+                    if cond == {"exists": True} and not _span_has_marker(
+                        tid, lines, id_ranges, _ALLOW_EXISTS
+                    ):
+                        findings.append(
+                            LintFinding(
+                                file=fname,
+                                test_id=tid,
+                                rule="W009",
+                                severity=WARN,
+                                message=(
+                                    f"'{jp}' asserts only exists: true (passes on null — "
+                                    f"use not_empty/a value, or '# lint: allow-exists')"
+                                ),
+                            )
+                        )
+
+            # W010 — $.data.* on an mcp-layer file: asserts/captures run on the
+            # POST-normalize body (data hoisted to top level) — never matches.
+            if is_mcp:
+                data_paths: list[str] = []
+                if isinstance(json_path, dict):
+                    data_paths.extend(jp for jp in json_path if _is_data_path(jp))
+                cap = t.get("capture")
+                if isinstance(cap, dict):
+                    data_paths.extend(v for v in cap.values() if _is_data_path(v))
+                for jp in data_paths:
+                    findings.append(
+                        LintFinding(
+                            file=fname,
+                            test_id=tid,
+                            rule="W010",
+                            severity=WARN,
+                            message=(
+                                f"'{jp}' targets $.data.* on an mcp-layer file — asserts/"
+                                f"captures run on the POST-normalize body (data is hoisted)"
+                            ),
+                        )
+                    )
+
+            # W008 — hardcoded host / db target in a bash command.
+            for bash_cmd in t.get("commands") or []:
+                cmd = bash_cmd.get("cmd") if isinstance(bash_cmd, dict) else None
+                if not isinstance(cmd, str):
+                    continue
+                for message in _bash_hardcoded_literals(cmd):
+                    findings.append(
+                        LintFinding(
+                            file=fname,
+                            test_id=tid,
+                            rule="W008",
+                            severity=WARN,
+                            message=f"{message} (use {{{{ env.get(...) }}}} or ${{VAR:-default}})",
+                        )
+                    )
+
             # W003 — under-budgeted eventually poll
             ev = t.get("eventually")
             if isinstance(ev, dict):
@@ -324,12 +518,19 @@ def _lint_file(
                         )
                     )
 
-            # W004 — create-shaped test missing per-run uniqueness. An inline
-            # ``# lint: allow-nocreate`` escape-hatches the irreducible cases
-            # (server-derived identifier, key-hint on a non-create tool).
+            # W004 — create-shaped test missing per-run uniqueness. Satisfied
+            # ONLY by {{RUN_ID}} or a run-scoped DECLARED variable — an inline
+            # {{timestamp}} is recomputed per render, so its value exists
+            # nowhere in the store: uncapturable and unsweepable (RGRN-13).
+            # An inline ``# lint: allow-nocreate`` escape-hatches the
+            # irreducible cases (server-derived identifier, key-hint on a
+            # non-create tool).
             if _is_create_shaped(t) and not _is_negative_test(t):
                 payload = list(_iter_strings(t.get("body"))) + list(_iter_strings(t.get("args")))
-                has_unique = any(("{{RUN_ID}}" in s or "{{timestamp}}" in s) for s in payload)
+                payload_refs: set[str] = set()
+                for s in payload:
+                    payload_refs.update(_VAR_RE.findall(s))
+                has_unique = bool(payload_refs & derived_vars)
                 suppressed = _span_has_marker(tid, lines, id_ranges, _ALLOW_NOCREATE)
                 if not has_unique and not suppressed:
                     findings.append(
@@ -338,7 +539,10 @@ def _lint_file(
                             test_id=tid,
                             rule="W004",
                             severity=WARN,
-                            message="create-shaped body/args carry no {{RUN_ID}}/{{timestamp}}",
+                            message=(
+                                "create-shaped body/args carry no {{RUN_ID}} or run-scoped "
+                                "variable (inline {{timestamp}} is unreproducible)"
+                            ),
                         )
                     )
 
@@ -434,9 +638,85 @@ def lint_directory(
             )
         )
 
+    findings.extend(_lint_sweep_coverage(parsed))
+
+    derived_vars = _derived_variables(parsed)
     for path, raw, text in parsed:
         file_allows = any(fnmatch.fnmatch(path.name, g) for g in allow_positional)
-        findings.extend(_lint_file(path, raw, text, budget_floor, file_allows))
+        findings.extend(_lint_file(path, raw, text, budget_floor, file_allows, derived_vars))
+
+    return findings
+
+
+def _lint_sweep_coverage(parsed: list[tuple[Path, dict, str]]) -> list[LintFinding]:
+    """Directory-level sweep rules: W007 (sweep-first missing) + W011 (orphans).
+
+    Positions are ``(file_index, group_index)`` in suite sort order, so
+    "sorts before" is literal execution order.
+    """
+    findings: list[LintFinding] = []
+    has_sweep = any(raw.get("sweep") for _path, raw, _text in parsed)
+
+    first_create: tuple[int, int] | None = None
+    first_cleanup: tuple[int, int] | None = None
+    created_prefixes: dict[str, str] = {}  # prefix -> "file:test" of first creator
+    coverage: list[str] = []
+
+    for fi, (path, raw, _text) in enumerate(parsed):
+        for step in raw.get("sweep") or []:
+            coverage.extend(s for s in _iter_strings(step) if isinstance(s, str))
+        for gi, g in enumerate(raw.get("groups") or []):
+            if g.get("cleanup") and first_cleanup is None:
+                first_cleanup = (fi, gi)
+            for t in g.get("tests") or []:
+                if g.get("cleanup"):
+                    coverage.extend(s for s in _iter_strings(t) if isinstance(s, str))
+                    continue
+                if _is_create_shaped(t) and not _is_negative_test(t):
+                    if first_create is None:
+                        first_create = (fi, gi)
+                    for s in list(_iter_strings(t.get("body"))) + list(
+                        _iter_strings(t.get("args"))
+                    ):
+                        for m in _FAMILY_PREFIX_RE.finditer(s):
+                            created_prefixes.setdefault(
+                                m.group(1), f"{path.name}:{t.get('id', '-')}"
+                            )
+
+    # W007 — no sweep: block AND no cleanup group sorting before the first
+    # create-shaped test. A suite that creates nothing needs no sweep.
+    if (
+        not has_sweep
+        and first_create is not None
+        and (first_cleanup is None or first_cleanup > first_create)
+    ):
+        findings.append(
+            LintFinding(
+                file="-",
+                test_id="-",
+                rule="W007",
+                severity=WARN,
+                message=(
+                    "suite has no sweep: block and no cleanup: true group before its "
+                    "first create-shaped test (sweep-first unenforced)"
+                ),
+            )
+        )
+
+    # W011 (best-effort) — created fixture families whose prefix appears in no
+    # sweep step / cleanup group string.
+    orphans = sorted(p for p in created_prefixes if not any(p in c for c in coverage))
+    if orphans:
+        listed = ", ".join(f"'{p}' ({created_prefixes[p]})" for p in orphans)
+        findings.append(
+            LintFinding(
+                file="-",
+                test_id="-",
+                rule="W011",
+                severity=WARN,
+                message=f"fixture families with no sweep/cleanup delete pattern: {listed}",
+            )
+        )
 
     return findings
 

@@ -1044,3 +1044,530 @@ def test_strict_elevates_warnings(tmp_path: Path) -> None:
 
 def test_empty_directory_no_findings(tmp_path: Path) -> None:
     assert lint_directory(tmp_path) == []
+
+
+# --------------------------------------------------------------------------- W004 (0.9.0 tightening)
+
+
+def _create_test(body: dict) -> dict:
+    return {
+        "id": "A.1",
+        "name": "create",
+        "method": "POST",
+        "path": "/companies",
+        "body": body,
+        "assert": {"status": 201},
+    }
+
+
+def test_w004_inline_timestamp_no_longer_satisfies(tmp_path: Path) -> None:
+    # {{timestamp}} is recomputed per render: the value exists nowhere in the
+    # store, so the fixture is uncapturable AND unsweepable (RGRN-13).
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [{"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{timestamp}}"})]}]
+        ),
+    )
+    assert "W004" in _rules(lint_directory(tmp_path))
+
+
+def test_w004_satisfied_by_declared_derived_variable(tmp_path: Path) -> None:
+    doc = _api_doc([{"id": 5, "name": "A", "tests": [_create_test({"slug": "{{CO_SLUG}}"})]}])
+    doc["variables"] = {"CO_SLUG": "regr-co-{{RUN_ID}}"}
+    _write(tmp_path, "01_api.yaml", doc)
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_derived_variable_declared_in_setup_file(tmp_path: Path) -> None:
+    # Cross-file: RUN_ID-derived variables declared in 00_setup cover creates
+    # in later files (VariableStore propagates them at run time).
+    setup = {
+        "meta": {"product": "demo", "layer": "setup", "runner": "bash"},
+        "variables": {"RUN_ID": "{{timestamp}}", "CO_SLUG": "regr-co-{{RUN_ID}}"},
+        "groups": [
+            {
+                "id": 1,
+                "name": "S",
+                "tests": [
+                    {
+                        "id": "S.1",
+                        "name": "t",
+                        "commands": [{"cmd": "true"}],
+                        "assert": {"last_exit_code": 0},
+                    }
+                ],
+            }
+        ],
+    }
+    _write(tmp_path, "00_setup.yaml", setup)
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc([{"id": 5, "name": "A", "tests": [_create_test({"slug": "{{CO_SLUG}}"})]}]),
+    )
+    assert "W004" not in _rules(lint_directory(tmp_path))
+
+
+def test_w004_non_derived_variable_does_not_satisfy(tmp_path: Path) -> None:
+    doc = _api_doc([{"id": 5, "name": "A", "tests": [_create_test({"slug": "{{CO_SLUG}}"})]}])
+    doc["variables"] = {"CO_SLUG": "fixed-slug-every-run"}
+    _write(tmp_path, "01_api.yaml", doc)
+    assert "W004" in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- W007
+
+
+def _cleanup_group(gid: int) -> dict:
+    return {
+        "id": gid,
+        "name": "Sweep",
+        "cleanup": True,
+        "tests": [
+            {
+                "id": f"CL.{gid}",
+                "name": "sweep families",
+                "commands": [{"cmd": "echo 'DELETE regr-co-%'"}],
+                "assert": {"last_exit_code": 0},
+            }
+        ],
+    }
+
+
+def test_w007_create_without_any_cleanup_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc([{"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]}]),
+    )
+    assert "W007" in _rules(lint_directory(tmp_path))
+
+
+def test_w007_cleanup_after_first_create_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]},
+                _cleanup_group(6),
+            ]
+        ),
+    )
+    assert "W007" in _rules(lint_directory(tmp_path))
+
+
+def test_w007_clean_cleanup_before_first_create(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                _cleanup_group(4),
+                {"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]},
+            ]
+        ),
+    )
+    assert "W007" not in _rules(lint_directory(tmp_path))
+
+
+def test_w007_clean_with_sweep_block(tmp_path: Path) -> None:
+    doc = _api_doc(
+        [{"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]}]
+    )
+    doc["sweep"] = [
+        {
+            "name": "sweep-co",
+            "runner": "bash",
+            "commands": [{"cmd": "echo 'DELETE regr-co-%'"}],
+            "assert": {"last_exit_code": 0},
+        }
+    ]
+    _write(tmp_path, "01_api.yaml", doc)
+    assert "W007" not in _rules(lint_directory(tmp_path))
+
+
+def test_w007_clean_when_nothing_creates(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {"status": 200},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W007" not in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- W008
+
+
+def _bash_doc(cmd: str) -> dict:
+    return {
+        "meta": {"product": "demo", "layer": "setup", "runner": "bash"},
+        "groups": [
+            {
+                "id": 1,
+                "name": "B",
+                "tests": [
+                    {
+                        "id": "B.1",
+                        "name": "t",
+                        "commands": [{"cmd": cmd}],
+                        "assert": {"last_exit_code": 0},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_w008_hardcoded_url_flagged(tmp_path: Path) -> None:
+    _write(tmp_path, "00_setup.yaml", _bash_doc("curl -s http://demo.localhost/api/v1/health"))
+    assert "W008" in _rules(lint_directory(tmp_path))
+
+
+def test_w008_clean_env_get_wrapped_url(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "00_setup.yaml",
+        _bash_doc(
+            "curl -s \"{{ env.get('REGRUN_API_ENDPOINT', 'http://demo.localhost') }}/health\""
+        ),
+    )
+    assert "W008" not in _rules(lint_directory(tmp_path))
+
+
+def test_w008_clean_shell_var_host(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "00_setup.yaml",
+        _bash_doc('curl -s "http://${API_HOST:-demo.localhost}/health"'),
+    )
+    assert "W008" not in _rules(lint_directory(tmp_path))
+
+
+def test_w008_hardcoded_psql_db_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "00_setup.yaml",
+        _bash_doc("docker exec -i pg psql -U user -d demo_prod -t -A -c 'SELECT 1;'"),
+    )
+    assert "W008" in _rules(lint_directory(tmp_path))
+
+
+def test_w008_clean_parameterized_psql_db(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "00_setup.yaml",
+        _bash_doc("docker exec -i pg psql -U user -d \"${DEMO_DB:-demo_db}\" -c 'SELECT 1;'"),
+    )
+    assert "W008" not in _rules(lint_directory(tmp_path))
+
+
+def test_w008_fires_inside_sweep_steps(tmp_path: Path) -> None:
+    doc = _bash_doc("true")
+    doc["sweep"] = [
+        {
+            "name": "sweep-http",
+            "runner": "bash",
+            "commands": [{"cmd": "curl -s http://demo.localhost/sweep"}],
+            "assert": {"last_exit_code": 0},
+        }
+    ]
+    _write(tmp_path, "00_setup.yaml", doc)
+    assert "W008" in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- W009
+
+
+def test_w009_exists_only_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {"status": 200, "json_path": {"$.summary": {"exists": True}}},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W009" in _rules(lint_directory(tmp_path))
+
+
+def test_w009_clean_not_empty(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {"json_path": {"$.summary": {"not_empty": True}}},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W009" not in _rules(lint_directory(tmp_path))
+
+
+def test_w009_clean_exists_false(tmp_path: Path) -> None:
+    # exists: false is a genuine absence assertion — not the null trap.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {"json_path": {"$.deleted": {"exists": False}}},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W009" not in _rules(lint_directory(tmp_path))
+
+
+def test_w009_inline_suppression(tmp_path: Path) -> None:
+    (tmp_path / "01_api.yaml").write_text(
+        "meta:\n  product: demo\n  layer: api\n  runner: httpx\n"
+        "groups:\n  - id: 5\n    name: A\n    tests:\n"
+        "      - id: A.1  # lint: allow-exists\n        name: t\n        method: GET\n"
+        "        assert:\n          json_path:\n            $.maybe_absent:\n              exists: true\n"
+    )
+    assert "W009" not in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- W010
+
+
+def test_w010_data_path_assert_on_mcp_file_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "t",
+                            "tool": "company_get",
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.data.id": {"not_empty": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W010" in _rules(lint_directory(tmp_path))
+
+
+def test_w010_data_path_capture_on_mcp_file_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "t",
+                            "tool": "company_manage",
+                            "args": {"action": "get", "slug": "x"},
+                            "capture": {"CO_ID": "$.data.id"},
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.id": {"not_empty": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W010" in _rules(lint_directory(tmp_path))
+
+
+def test_w010_clean_top_level_path_on_mcp_file(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "t",
+                            "tool": "company_get",
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.id": {"not_empty": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W010" not in _rules(lint_directory(tmp_path))
+
+
+def test_w010_data_path_fine_on_api_file(tmp_path: Path) -> None:
+    # HTTP responses are not normalized — $.data.* is legitimate on api files.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {"json_path": {"$.data.items": {"not_empty": True}}},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W010" not in _rules(lint_directory(tmp_path))
+
+
+def test_w010_database_field_not_a_false_hit(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "02_mcp.yaml",
+        _mcp_doc(
+            [
+                {
+                    "id": 10,
+                    "name": "M",
+                    "tests": [
+                        {
+                            "id": "M.1",
+                            "name": "t",
+                            "tool": "health_check",
+                            "assert": {
+                                "is_error": False,
+                                "json_path": {"$.database": {"not_empty": True}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W010" not in _rules(lint_directory(tmp_path))
+
+
+# --------------------------------------------------------------------------- W011
+
+
+def test_w011_orphan_family_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                _cleanup_group(4),  # sweeps regr-co-% only
+                {"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]},
+                {
+                    "id": 6,
+                    "name": "B",
+                    "tests": [
+                        {
+                            "id": "B.1",
+                            "name": "orphan create",
+                            "method": "POST",
+                            "path": "/tags",
+                            "body": {"slug": "regr-tag-{{RUN_ID}}"},
+                            "assert": {"status": 201},
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    findings = lint_directory(tmp_path)
+    w011 = [f for f in findings if f.rule == "W011"]
+    assert len(w011) == 1
+    assert "regr-tag-" in w011[0].message
+    assert "regr-co-" not in w011[0].message
+
+
+def test_w011_clean_when_sweep_covers_family(tmp_path: Path) -> None:
+    doc = _api_doc(
+        [{"id": 5, "name": "A", "tests": [_create_test({"slug": "regr-co-{{RUN_ID}}"})]}]
+    )
+    doc["sweep"] = [
+        {
+            "name": "sweep-co",
+            "runner": "bash",
+            "commands": [{"cmd": "echo 'DELETE FROM companies WHERE slug LIKE ''regr-co-%'''"}],
+            "assert": {"last_exit_code": 0},
+        }
+    ]
+    _write(tmp_path, "01_api.yaml", doc)
+    assert "W011" not in _rules(lint_directory(tmp_path))
