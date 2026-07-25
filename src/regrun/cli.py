@@ -172,6 +172,15 @@ def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
             runner = chk.runner or "meta.runner"
             click.echo(f"    [{path.name}] {chk.name} (runner: {runner})")
 
+    sweep_steps = [
+        (path, step) for path, tf in zip(yaml_files, test_files) for step in (tf.sweep or [])
+    ]
+    if sweep_steps:
+        click.echo(f"\n  Sweep ({len(sweep_steps)} steps):")
+        for path, step in sweep_steps:
+            runner = step.runner or "meta.runner"
+            click.echo(f"    [{path.name}] {step.name} (runner: {runner})")
+
     total_tests = 0
     for path, tf in zip(yaml_files, test_files):
         click.echo(f"\n  File: {path.name}")
@@ -266,6 +275,12 @@ def cli() -> None:
     help="Skip preflight dependency-health checks (deliberate local override)",
 )
 @click.option(
+    "--skip-sweep",
+    is_flag=True,
+    default=False,
+    help="Skip the declared sweep: block (use when iterating; leaks must be swept later)",
+)
+@click.option(
     "--no-lock",
     is_flag=True,
     default=False,
@@ -289,6 +304,7 @@ def run(
     skip_setup: bool,
     skip_cleanup: bool,
     skip_preflight: bool,
+    skip_sweep: bool,
     no_lock: bool,
     no_strict_vars: bool,
 ) -> None:
@@ -361,6 +377,7 @@ def run(
                 skip_preflight,
                 no_lock,
                 no_strict_vars,
+                skip_sweep,
             )
         )
     except executor.RunLockError as e:
@@ -382,6 +399,20 @@ def run(
         if run_result.preflight_error:
             click.echo(f"  error: {run_result.preflight_error}")
         diag = run_result.preflight_diagnostics
+        if diag is not None:
+            for ar in diag.failed_assertions:
+                click.echo(f"  ✗ {ar.assertion_type}: {ar.message}")
+            if diag.response_body is not None:
+                click.echo(f"  response body: {diag.response_body}")
+        sys.exit(1)
+
+    # Sweep failure: same contract as preflight — instant abort, zero groups
+    # executed (a suite must not create fixtures into an unswept environment).
+    if run_result.sweep_failed:
+        click.echo(f"SWEEP FAILED: {run_result.sweep_failed_name}")
+        if run_result.sweep_error:
+            click.echo(f"  error: {run_result.sweep_error}")
+        diag = run_result.sweep_diagnostics
         if diag is not None:
             for ar in diag.failed_assertions:
                 click.echo(f"  ✗ {ar.assertion_type}: {ar.message}")

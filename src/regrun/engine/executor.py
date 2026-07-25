@@ -135,11 +135,11 @@ def _skipped_result(test: Test, group_name: str, file_stem: str = "") -> TestRes
     )
 
 
-class _PreflightOutcome:
-    """Outcome of the preflight phase.
+class _PhaseOutcome:
+    """Outcome of a pre-group phase (preflight checks or sweep steps).
 
-    ``count`` is the number of checks actually executed; ``failed_result`` /
-    ``failed_name`` are set only when a check failed (short-circuit).
+    ``count`` is the number of checks/steps actually executed; ``failed_result``
+    / ``failed_name`` are set only when one failed (short-circuit).
     """
 
     def __init__(self) -> None:
@@ -173,7 +173,7 @@ async def _run_preflight(
     store: VariableStore,
     verbose: bool,
     no_strict_vars: bool = False,
-) -> _PreflightOutcome | None:
+) -> _PhaseOutcome | None:
     """Run every ``preflight:`` check across all files, once, before any group.
 
     Returns ``None`` when no checks are declared. Otherwise returns an outcome
@@ -183,21 +183,56 @@ async def _run_preflight(
     checks = [
         (path, tf, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])
     ]
-    if not checks:
+    return await _run_phase(
+        checks, "preflight", test_files, yaml_files, store, verbose, no_strict_vars
+    )
+
+
+async def _run_sweep(
+    yaml_files: list[Path],
+    test_files: list[TestFile],
+    store: VariableStore,
+    verbose: bool,
+    no_strict_vars: bool = False,
+) -> _PhaseOutcome | None:
+    """Run every ``sweep:`` step across all files, once, after preflight and
+    before any group.
+
+    Returns ``None`` when no steps are declared. A step failure aborts the run
+    with zero groups executed — a suite must not create fixtures into an
+    environment it could not sweep.
+    """
+    steps = [
+        (path, tf, step) for path, tf in zip(yaml_files, test_files) for step in (tf.sweep or [])
+    ]
+    return await _run_phase(steps, "sweep", test_files, yaml_files, store, verbose, no_strict_vars)
+
+
+async def _run_phase(
+    items: list,
+    phase: str,
+    test_files: list[TestFile],
+    yaml_files: list[Path],
+    store: VariableStore,
+    verbose: bool,
+    no_strict_vars: bool,
+) -> _PhaseOutcome | None:
+    """Shared engine for the preflight and sweep phases (run-once, fail-aborts)."""
+    if not items:
         return None
 
-    # Static file variables must be resolvable inside a probe (env is already
-    # loaded). Merge them (skip-if-set) mirroring the per-file loop; capture is
-    # forbidden in checks so no run state is introduced here.
+    # Static file variables must be resolvable inside a probe/step (env is
+    # already loaded). Merge them (skip-if-set) mirroring the per-file loop;
+    # capture is forbidden in both phases so no run state is introduced here.
     for _path, tf in zip(yaml_files, test_files):
         store.strict = _effective_strict(tf, no_strict_vars)
         _merge_file_variables(store, tf)
 
-    outcome = _PreflightOutcome()
+    outcome = _PhaseOutcome()
     runner_cache: dict[str, Runner] = {}
-    for path, test_file, check in checks:
+    for path, test_file, item in items:
         store.strict = _effective_strict(test_file, no_strict_vars)
-        test = check.as_test()
+        test = item.as_test()
         runner = get_runner_for_test(test, test_file, runner_cache)
         outcome.count += 1
         if runner is None:
@@ -205,17 +240,17 @@ async def _run_preflight(
             outcome.failed_result = TestResult(
                 test_id=test.id,
                 test_name=test.name,
-                group_name="preflight",
+                group_name=phase,
                 passed=False,
                 error=f"Unsupported runner: {effective_type}",
                 file_stem=path.stem,
             )
-            outcome.failed_name = check.name
+            outcome.failed_name = item.name
             break
 
         result = await execute_single_test(
             test=test,
-            group_name="preflight",
+            group_name=phase,
             runner=runner,
             store=store,
             verbose=verbose,
@@ -223,7 +258,7 @@ async def _run_preflight(
         )
         if not result.passed:
             outcome.failed_result = result
-            outcome.failed_name = check.name
+            outcome.failed_name = item.name
             break
 
     await close_runners(runner_cache)
@@ -239,6 +274,7 @@ async def run_tests(
     skip_preflight: bool = False,
     no_lock: bool = False,
     no_strict_vars: bool = False,
+    skip_sweep: bool = False,
 ) -> RunResult:
     """Execute all tests across all files and collect results.
 
@@ -250,6 +286,13 @@ async def run_tests(
     file order) run once, after env/variables load and before any group. Any
     preflight failure aborts the run immediately with a ``preflight_failed``
     result and executes zero groups. ``skip_preflight`` bypasses them.
+
+    Sweep steps (``sweep:`` blocks, same collection order) run once, AFTER
+    preflight and before any group — the structural sweep-first guarantee. A
+    step failure aborts the run (``sweep_failed`` result, zero groups
+    executed): a suite must not create fixtures into an environment it could
+    not sweep. ``skip_sweep`` bypasses them; ``cleanup: true`` group semantics
+    are untouched (tail-end backstop).
 
     On a ``--fail-fast`` abort, cleanup-flagged groups still run (unless
     ``skip_cleanup``); every other remaining test is marked skipped. Iteration
@@ -266,6 +309,7 @@ async def run_tests(
             skip_cleanup,
             skip_preflight,
             no_strict_vars,
+            skip_sweep,
         )
     finally:
         release_run_lock(lock_fd)
@@ -279,6 +323,7 @@ async def _run_tests_locked(
     skip_cleanup: bool,
     skip_preflight: bool,
     no_strict_vars: bool = False,
+    skip_sweep: bool = False,
 ) -> RunResult:
     """Run body, executed while the per-product lock is held (see ``run_tests``)."""
     store = VariableStore()
@@ -321,6 +366,30 @@ async def _run_tests_locked(
                     preflight_failed_name=preflight_result.failed_name,
                     preflight_diagnostics=preflight_result.failed_result.diagnostics,
                     preflight_error=preflight_result.failed_result.error,
+                )
+
+    # Sweep phase: declared pattern-based cleanup of prior-run artifacts, run
+    # once after preflight and before any group. A failure aborts the run —
+    # the structural sweep-first guarantee (creating fixtures into an unswept
+    # environment is how cross-run collisions are born).
+    sweep_count = 0
+    if not skip_sweep:
+        sweep_result = await _run_sweep(yaml_files, test_files, store, verbose, no_strict_vars)
+        if sweep_result is not None:
+            sweep_count = sweep_result.count
+            if sweep_result.failed_result is not None:
+                run_duration = (time.monotonic() - run_start) * 1000
+                return RunResult(
+                    product=product,
+                    layer=layer,
+                    run_id=store.effective_run_id,
+                    duration_ms=run_duration,
+                    preflight_count=preflight_count,
+                    sweep_count=sweep_result.count,
+                    sweep_failed=True,
+                    sweep_failed_name=sweep_result.failed_name,
+                    sweep_diagnostics=sweep_result.failed_result.diagnostics,
+                    sweep_error=sweep_result.failed_result.error,
                 )
 
     for path, test_file in zip(yaml_files, test_files):
@@ -403,6 +472,7 @@ async def _run_tests_locked(
         duration_ms=run_duration,
         test_results=all_results,
         preflight_count=preflight_count,
+        sweep_count=sweep_count,
     )
 
 

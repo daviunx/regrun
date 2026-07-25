@@ -63,6 +63,16 @@ class RunResult(BaseModel):
     preflight_diagnostics: FailureDiagnostics | None = None
     preflight_error: str | None = None
 
+    # Sweep phase (declared pre-run cleanup steps, run after preflight and
+    # before any group). Same shape as the preflight fields: ``sweep_count`` is
+    # the number of steps executed; the ``sweep_*`` failure fields are
+    # populated only when a step aborted the run.
+    sweep_count: int = 0
+    sweep_failed: bool = False
+    sweep_failed_name: str | None = None
+    sweep_diagnostics: FailureDiagnostics | None = None
+    sweep_error: str | None = None
+
 
 def format_text(run_result: RunResult) -> str:
     """Format run results as a human-readable text table.
@@ -87,6 +97,10 @@ def format_text(run_result: RunResult) -> str:
     # binary that silently ignored the suite's preflight blocks.
     if run_result.preflight_count > 0:
         lines.append(f"preflight: {run_result.preflight_count} checks passed")
+    # Sweep visibility, same contract: a log missing this line for a suite that
+    # declares sweep: was run by a pre-0.9.0 binary that silently ignored it.
+    if run_result.sweep_count > 0:
+        lines.append(f"sweep: {run_result.sweep_count} steps completed")
     lines.append("")
 
     # Column widths

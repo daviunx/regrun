@@ -245,6 +245,77 @@ class PreflightCheck(BaseModel):
         )
 
 
+class SweepStep(BaseModel):
+    """A pre-run sweep step: pattern-based cleanup of prior-run artifacts.
+
+    Declared as a top-level ``sweep:`` block (peer of ``preflight:``), typically
+    in the setup file. Steps run once, after ``preflight:`` and before any
+    group; a failure ABORTS the run with zero groups executed — a suite must
+    not create fixtures into an environment it could not sweep. Steps are
+    restricted to the ``bash`` / ``sql`` / ``httpx`` runners and MUST be
+    capture-independent: ``capture:`` (test-level or per-command) is rejected
+    at validation, as is ``eventually:`` (a sweep is a delete, not a poll).
+    ``timeout`` defaults to 60s (pattern deletes can be slower than health
+    probes). ``--skip-sweep`` suppresses the block; ``cleanup: true`` group
+    semantics are untouched and remain the tail-end backstop.
+    """
+
+    model_config = ConfigDict(strict=False, populate_by_name=True)
+
+    name: str
+
+    # Test-shaped body (subset relevant to a capture-independent sweep).
+    runner: Literal["httpx", "bash", "sql"] | None = None
+    method: str | None = None
+    path: str | None = None
+    auth: str | None = None
+    org_header: bool | None = None
+    body: dict | None = None
+    query_params: dict[str, str] | None = None
+    commands: list[BashCommand] | None = None
+    sql: str | None = None
+
+    assert_: Assertion = Field(alias="assert")
+    timeout: float = 60.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_capture(cls, data: object) -> object:
+        """Sweeps must be capture-independent, and are deletes, not polls."""
+        if isinstance(data, dict):
+            if "capture" in data:
+                raise ValueError(
+                    "sweep steps may not use 'capture:' (sweeps must be capture-independent)"
+                )
+            if "eventually" in data:
+                raise ValueError("sweep steps may not use 'eventually:' (a sweep is not a poll)")
+            for cmd in data.get("commands") or []:
+                if isinstance(cmd, dict) and "capture" in cmd:
+                    raise ValueError(
+                        "sweep steps may not use per-command 'capture:' "
+                        "(sweeps must be capture-independent)"
+                    )
+        return data
+
+    def as_test(self) -> "Test":
+        """Materialize the step as a ``Test`` for the runner layer."""
+        return Test(
+            id=f"sweep:{self.name}",
+            name=self.name,
+            runner=self.runner,
+            method=self.method,
+            path=self.path,
+            auth=self.auth,
+            org_header=self.org_header,
+            body=self.body,
+            query_params=self.query_params,
+            commands=self.commands,
+            sql=self.sql,
+            timeout=int(self.timeout),
+            assert_=self.assert_,
+        )
+
+
 class TestFile(BaseModel):
     """Top-level model representing a parsed YAML test file."""
 
@@ -254,4 +325,5 @@ class TestFile(BaseModel):
     variables: dict[str, str] = Field(default_factory=dict)
     auth: dict[str, AuthConfig] = Field(default_factory=dict)
     preflight: list[PreflightCheck] | None = None
+    sweep: list[SweepStep] | None = None
     groups: list[Group]
