@@ -433,6 +433,31 @@ async def execute_single_test(
             response.body,
         )
 
+        # Zero evaluated assertions is a hard error, never a pass: ``all([])``
+        # is True, so an assert block that matches no recognised key (e.g.
+        # ``assert: {}`` or ``json_path: {}``) would otherwise report PASSED
+        # having checked NOTHING — the same false-green family as
+        # ``eventually.max_attempts: 0`` (closed in 0.8.3).
+        if not assertion_results:
+            error_msg = "zero assertions evaluated (assert block matched no recognised assertion)"
+            logger.error("zero_assertions_evaluated", test_id=test.id)
+            return TestResult(
+                test_id=test.id,
+                test_name=test.name,
+                group_name=group_name,
+                passed=False,
+                error=error_msg,
+                duration_ms=duration_ms,
+                file_stem=file_stem,
+                diagnostics=build_failure_diagnostics(
+                    request=response.request_echo,
+                    response=response,
+                    failed_assertions=[],
+                    attempts=attempts,
+                    secrets=response.secret_values,
+                ),
+            )
+
         all_passed = all(ar.passed for ar in assertion_results)
 
         # Full diagnostics only on failure (passing tests stay terse).

@@ -50,9 +50,16 @@ class AuthConfig(BaseModel):
 
 
 class Assertion(BaseModel):
-    """Assertion block for a test. Mapped from the YAML 'assert' key."""
+    """Assertion block for a test. Mapped from the YAML 'assert' key.
 
-    model_config = ConfigDict(strict=False)
+    ``extra="forbid"`` is load-bearing: a typo'd key (``statuss``, ``jsonpath``)
+    would otherwise be silently ignored, the block would evaluate zero
+    assertions, and the executor's ``all([])`` would report the test PASSED
+    having checked nothing — the same false-green family as
+    ``eventually.max_attempts: 0`` (closed in 0.8.3).
+    """
+
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     status: int | list[int] | None = None
     is_error: bool | None = None
@@ -106,9 +113,14 @@ class WebSocketConfig(BaseModel):
 
 
 class Test(BaseModel):
-    """A single test case within a group."""
+    """A single test case within a group.
 
-    model_config = ConfigDict(strict=False, populate_by_name=True)
+    ``extra="forbid"`` so a misspelled field (``bodyy``, ``json:`` instead of
+    ``body:``) fails at load instead of being silently dropped. Verified against
+    every fleet suite (71 files) before enabling: zero extra keys in use.
+    """
+
+    model_config = ConfigDict(strict=False, populate_by_name=True, extra="forbid")
 
     id: str
     name: str
