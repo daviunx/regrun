@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 
 import structlog
@@ -19,11 +20,18 @@ class BashRunner:
     Executes shell commands sequentially, captures stdout for assertions
     and variable extraction. Commands run via ``asyncio.create_subprocess_shell``
     to support pipes, redirects, and shell expansions.
+
+    ``env`` (optional) is merged over ``os.environ`` into every child process —
+    the executor passes the resolved ``REGRUN_API_ENDPOINT`` /
+    ``REGRUN_MCP_ENDPOINT`` and the run's ``RUN_ID`` so bash steps always know
+    the stack under test (``${REGRUN_API_ENDPOINT}`` is always correct and
+    hardcoded hosts become unnecessary rather than merely discouraged).
     """
 
-    def __init__(self, cwd: str, timeout: int = 30) -> None:
+    def __init__(self, cwd: str, timeout: int = 30, env: dict[str, str] | None = None) -> None:
         self._cwd = cwd
         self._timeout = timeout
+        self._env = env
 
     async def execute(self, test: Test, variables: VariableStore) -> RunnerResponse:
         """Execute all commands in a bash test sequentially.
@@ -147,6 +155,7 @@ class BashRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
+                env={**os.environ, **self._env} if self._env else None,
             )
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(

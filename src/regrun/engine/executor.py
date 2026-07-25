@@ -51,8 +51,15 @@ Runner = HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner | SqlRunner
 __all__ = ["RunLockError", "run_tests", "create_runner_for_type"]
 
 
-def create_runner_for_type(runner_type: str, test_file: TestFile) -> Runner | None:
-    """Create a runner instance for the given runner type."""
+def create_runner_for_type(
+    runner_type: str,
+    test_file: TestFile,
+    store: VariableStore | None = None,
+) -> Runner | None:
+    """Create a runner instance for the given runner type.
+
+    ``store`` (when provided) feeds the bash child environment its ``RUN_ID``.
+    """
     if runner_type == "httpx":
         endpoint = test_file.meta.endpoint
         if not endpoint:
@@ -80,7 +87,18 @@ def create_runner_for_type(runner_type: str, test_file: TestFile) -> Runner | No
     if runner_type == "bash":
         # Use the current working directory as the cwd for bash commands.
         # This is where regrun was invoked from.
-        return BashRunner(cwd=str(Path.cwd()), timeout=settings.timeout)
+        # The bash child always knows the stack under test: the resolved
+        # endpoints and the run's effective RUN_ID ride the environment, so
+        # ${REGRUN_API_ENDPOINT} is always correct and hardcoding a host is
+        # unnecessary rather than merely discouraged.
+        extra_env: dict[str, str] = {}
+        if test_file.meta.endpoint:
+            extra_env["REGRUN_API_ENDPOINT"] = test_file.meta.endpoint
+        if test_file.meta.mcp_endpoint:
+            extra_env["REGRUN_MCP_ENDPOINT"] = test_file.meta.mcp_endpoint
+        if store is not None:
+            extra_env["RUN_ID"] = store.effective_run_id
+        return BashRunner(cwd=str(Path.cwd()), timeout=settings.timeout, env=extra_env)
 
     if runner_type == "sql":
         return SqlRunner(
@@ -104,11 +122,12 @@ def get_runner_for_test(
     test: Test,
     test_file: TestFile,
     runner_cache: dict[str, Runner],
+    store: VariableStore | None = None,
 ) -> Runner | None:
     """Get the runner for a test, respecting per-test runner overrides."""
     runner_type = test.runner or test_file.meta.runner
     if runner_type not in runner_cache:
-        runner = create_runner_for_type(runner_type, test_file)
+        runner = create_runner_for_type(runner_type, test_file, store)
         if runner is not None:
             runner_cache[runner_type] = runner
         else:
@@ -238,7 +257,7 @@ async def _run_phase(
     for path, test_file, item in items:
         store.strict = _effective_strict(test_file, no_strict_vars)
         test = item.as_test()
-        runner = get_runner_for_test(test, test_file, runner_cache)
+        runner = get_runner_for_test(test, test_file, runner_cache, store)
         outcome.count += 1
         if runner is None:
             effective_type = test.runner or test_file.meta.runner
@@ -437,7 +456,7 @@ async def _run_tests_locked(
             )
 
             for test in group.tests:
-                runner = get_runner_for_test(test, test_file, runner_cache)
+                runner = get_runner_for_test(test, test_file, runner_cache, store)
                 if runner is None:
                     effective_type = test.runner or test_file.meta.runner
                     all_results.append(
