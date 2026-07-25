@@ -216,5 +216,5 @@ def _embed_is_error(body: dict | list | str | None, is_error: bool) -> dict | st
     if body is None:
         return {"is_error": is_error}
 
-    # Body is a string -- wrap in dict
+    # Body is a list or a string -- wrap in dict, preserving it intact
     return {"is_error": is_error, "_raw_text": body}

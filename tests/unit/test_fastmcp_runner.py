@@ -155,3 +155,36 @@ def test_aclose_closes_all_clients(monkeypatch):
     asyncio.run(runner.aclose())
     assert _FakeClient.instances[0].exited == 1
     assert runner._clients == {}
+
+
+# ---------------------------------------------------------------------------
+# _embed_is_error -- every branch of the body-shape dispatch.
+#
+# The list case had no coverage: the annotation was widened dict|str|None ->
+# dict|list|str|None so mypy matches what the code always did at runtime (a
+# list already fell through to the _raw_text wrap, since annotations are not
+# enforced). Untested, nothing would have gone red if that fall-through were
+# changed, so it is pinned here.
+# ---------------------------------------------------------------------------
+
+
+def test_embed_is_error_dict_body_gets_flag():
+    assert fr._embed_is_error({"ok": True}, is_error=False) == {"ok": True, "is_error": False}
+
+
+def test_embed_is_error_does_not_overwrite_tool_level_flag():
+    """A tool that set its own is_error wins -- the transport must not clobber it."""
+    assert fr._embed_is_error({"is_error": True}, is_error=False) == {"is_error": True}
+
+
+def test_embed_is_error_none_body_yields_flag_only():
+    assert fr._embed_is_error(None, is_error=True) == {"is_error": True}
+
+
+def test_embed_is_error_string_body_lands_in_raw_text():
+    assert fr._embed_is_error("boom", is_error=True) == {"is_error": True, "_raw_text": "boom"}
+
+
+def test_embed_is_error_list_body_lands_in_raw_text():
+    """A bare JSON array body wraps like a string one -- the list is preserved intact."""
+    assert fr._embed_is_error([1, 2], is_error=True) == {"is_error": True, "_raw_text": [1, 2]}
