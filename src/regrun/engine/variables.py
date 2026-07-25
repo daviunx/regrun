@@ -40,6 +40,11 @@ class VariableStore:
         self.strict = strict
         self._vars: dict[str, str] = {}
         self._dotenv_vars: dict[str, str] = {}
+        # Engine-owned per-run RUN_ID: generated ONCE per store (== once per
+        # run), same format {{timestamp}} produces, so suites no longer need to
+        # hand-declare RUN_ID: "{{timestamp}}" in 00_setup. A suite that still
+        # declares or captures RUN_ID shadows it — the suite's value wins.
+        self._run_id = f"{int(time.time())}{uuid.uuid4().hex[:4]}"
         self._jinja_env = Environment(
             loader=BaseLoader(),
             undefined=StrictUndefined,
@@ -70,9 +75,18 @@ class VariableStore:
         """Return a copy of all stored variables."""
         return dict(self._vars)
 
+    @property
+    def effective_run_id(self) -> str:
+        """The RUN_ID this run renders: suite-declared/captured when present
+        (backcompat — the suite's value wins), else the engine builtin."""
+        return self._vars.get("RUN_ID", self._run_id)
+
     def _build_context(self) -> dict[str, Any]:
         """Build the full Jinja2 rendering context with built-ins and env access."""
         ctx: dict[str, Any] = dict(self._vars)
+        # Builtin fallback only: a declared/captured RUN_ID (already in ctx via
+        # self._vars) shadows the engine value.
+        ctx.setdefault("RUN_ID", self._run_id)
         ctx["timestamp"] = f"{int(time.time())}{uuid.uuid4().hex[:4]}"
         ctx["date"] = time.strftime("%Y-%m-%d")
         ctx["uuid"] = str(uuid.uuid4())

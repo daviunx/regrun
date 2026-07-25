@@ -42,6 +42,10 @@ class RunResult(BaseModel):
 
     product: str
     layer: str | None = None
+    # The run's effective RUN_ID (suite-declared value when one is declared /
+    # captured, else the engine-generated builtin). Empty only in unit-built
+    # results.
+    run_id: str = ""
     total: int = 0
     passed: int = 0
     failed: int = 0
@@ -77,6 +81,8 @@ def format_text(run_result: RunResult) -> str:
         header += f" (layer: {run_result.layer})"
     lines.append(header)
     lines.append("=" * len(header))
+    if run_result.run_id:
+        lines.append(f"run_id: {run_result.run_id}")
     # Preflight visibility: a CI log missing this line was run by a pre-0.8.0
     # binary that silently ignored the suite's preflight blocks.
     if run_result.preflight_count > 0:

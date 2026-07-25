@@ -314,6 +314,7 @@ async def _run_tests_locked(
                 return RunResult(
                     product=product,
                     layer=layer,
+                    run_id=store.effective_run_id,
                     duration_ms=run_duration,
                     preflight_count=preflight_result.count,
                     preflight_failed=True,
@@ -393,6 +394,7 @@ async def _run_tests_locked(
     return RunResult(
         product=product,
         layer=layer,
+        run_id=store.effective_run_id,
         total=len(all_results),
         passed=sum(1 for r in all_results if r.passed),
         failed=sum(1 for r in all_results if not r.passed and not r.skipped and not r.error),
