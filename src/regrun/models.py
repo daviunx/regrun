@@ -84,7 +84,7 @@ class EventuallyConfig(BaseModel):
     # run_with_retry returns (None, []), and the executor's
     # `all_passed = all(assertion_results)` is True on an empty list -- the test
     # reports PASSED having evaluated ZERO assertions.
-    max_attempts: int = Field(default=10, ge=1)
+    max_attempts: int = Field(default=10)
     interval: float = Field(default=2.0, ge=0.0)  # seconds between attempts
     backoff: float = Field(default=1.0, ge=0.0)  # multiplier (1.0 = fixed interval)
     initial_delay: float = Field(default=0.0, ge=0.0)  # optional wait before the first attempt
