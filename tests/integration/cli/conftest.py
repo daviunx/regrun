@@ -11,6 +11,16 @@ import pytest
 import yaml
 
 
+@pytest.fixture(autouse=True)
+def _isolated_lock_dir(tmp_path_factory, monkeypatch) -> None:
+    """Point the FIXED run-lock dir (~/.regrun/locks) at a temp dir for tests.
+
+    The lock location is deliberately independent of REGRUN_RUNS_DIR (0.9.0),
+    so without this override every CLI test would flock in the real home dir.
+    """
+    monkeypatch.setenv("REGRUN_LOCK_DIR", str(tmp_path_factory.mktemp("locks")))
+
+
 def _write_yaml(directory: Path, filename: str, doc: dict) -> Path:
     path = directory / filename
     path.write_text(yaml.safe_dump(doc, sort_keys=False))

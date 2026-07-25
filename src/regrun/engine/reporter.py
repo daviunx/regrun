@@ -46,6 +46,9 @@ class RunResult(BaseModel):
     # captured, else the engine-generated builtin). Empty only in unit-built
     # results.
     run_id: str = ""
+    # The lock-target slug (REGRUN_LOCK_TARGET / resolved endpoint host /
+    # "default"): keys the run lock AND namespaces the artifacts dir.
+    target: str = "default"
     total: int = 0
     passed: int = 0
     failed: int = 0

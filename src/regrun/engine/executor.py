@@ -23,7 +23,12 @@ from regrun.config import settings
 from regrun.engine.assertions import evaluate_assertions
 from regrun.engine.diagnostics import build_failure_diagnostics
 from regrun.engine.reporter import RunResult, TestResult
-from regrun.engine.run_lock import RunLockError, acquire_run_lock, release_run_lock
+from regrun.engine.run_lock import (
+    RunLockError,
+    acquire_run_lock,
+    derive_lock_target,
+    release_run_lock,
+)
 from regrun.engine.retry import resolve_response_and_results
 from regrun.engine.variables import (
     UnresolvedVariableError,
@@ -299,7 +304,13 @@ async def run_tests(
     continues across all files so cleanup groups in later files also execute.
     """
     lock_product = test_files[0].meta.product if test_files else "unknown"
-    lock_fd = None if no_lock else acquire_run_lock(lock_product)
+    # The lock target keys BOTH the run lock and the artifacts namespace:
+    # same product against the same stack serializes; different stacks (e.g.
+    # two isolate slugs) run concurrently. meta.endpoint already reflects the
+    # REGRUN_API_ENDPOINT override (applied in cli before this call).
+    api_endpoint = next((tf.meta.endpoint for tf in test_files if tf.meta.endpoint), None)
+    target = derive_lock_target(api_endpoint)
+    lock_fd = None if no_lock else acquire_run_lock(lock_product, target)
     try:
         return await _run_tests_locked(
             yaml_files,
@@ -310,6 +321,7 @@ async def run_tests(
             skip_preflight,
             no_strict_vars,
             skip_sweep,
+            target,
         )
     finally:
         release_run_lock(lock_fd)
@@ -324,6 +336,7 @@ async def _run_tests_locked(
     skip_preflight: bool,
     no_strict_vars: bool = False,
     skip_sweep: bool = False,
+    target: str = "default",
 ) -> RunResult:
     """Run body, executed while the per-product lock is held (see ``run_tests``)."""
     store = VariableStore()
@@ -360,6 +373,7 @@ async def _run_tests_locked(
                     product=product,
                     layer=layer,
                     run_id=store.effective_run_id,
+                    target=target,
                     duration_ms=run_duration,
                     preflight_count=preflight_result.count,
                     preflight_failed=True,
@@ -383,6 +397,7 @@ async def _run_tests_locked(
                     product=product,
                     layer=layer,
                     run_id=store.effective_run_id,
+                    target=target,
                     duration_ms=run_duration,
                     preflight_count=preflight_count,
                     sweep_count=sweep_result.count,
@@ -464,6 +479,7 @@ async def _run_tests_locked(
         product=product,
         layer=layer,
         run_id=store.effective_run_id,
+        target=target,
         total=len(all_results),
         passed=sum(1 for r in all_results if r.passed),
         failed=sum(1 for r in all_results if not r.passed and not r.skipped and not r.error),

@@ -93,9 +93,13 @@ def _eventually_suite(directory: Path) -> None:
 
 
 def _artifact_dir(runs_dir: Path) -> Path:
-    """Return the single timestamped run dir under {runs_dir}/{product}/."""
-    product_dir = runs_dir / PRODUCT
-    candidates = [p for p in product_dir.iterdir() if p.is_dir() and TS_DIR_RE.match(p.name)]
+    """Return the single timestamped run dir under {runs_dir}/{product}/{target}/.
+
+    The bash-only fixture suites carry no endpoint, so the target slug is
+    ``default`` (0.9.0 target-namespaced artifacts).
+    """
+    target_dir = runs_dir / PRODUCT / "default"
+    candidates = [p for p in target_dir.iterdir() if p.is_dir() and TS_DIR_RE.match(p.name)]
     assert len(candidates) == 1, f"expected one run dir, found {candidates}"
     return candidates[0]
 
