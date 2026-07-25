@@ -15,6 +15,8 @@ Cleanup-always guarantee (mirror of the setup-always guarantee):
 """
 
 import time
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import structlog
@@ -45,6 +47,13 @@ from regrun.runners.sql_runner import SqlRunner
 from regrun.runners.websocket_runner import WebSocketRunner
 
 logger = structlog.get_logger()
+
+# The engine version that adjudicates every verdict — recorded on RunResult so
+# a persisted report can always be attributed to the regrun that produced it.
+try:
+    REGRUN_VERSION = _pkg_version("regrun")
+except PackageNotFoundError:  # pragma: no cover - source tree without install
+    REGRUN_VERSION = "unknown"
 
 Runner = HttpxRunner | FastMcpRunner | BashRunner | WebSocketRunner | SqlRunner
 
@@ -366,6 +375,11 @@ async def _run_tests_locked(
     product = test_files[0].meta.product if test_files else "unknown"
     layer = test_files[0].meta.layer if len(test_files) == 1 else None
 
+    # Report provenance: the resolved endpoints (meta.* already reflects the
+    # REGRUN_* overrides applied in cli) ride every RunResult.
+    api_endpoint = next((tf.meta.endpoint for tf in test_files if tf.meta.endpoint), None)
+    mcp_endpoint = next((tf.meta.mcp_endpoint for tf in test_files if tf.meta.mcp_endpoint), None)
+
     # Load env_file from any file's meta (typically the setup file).
     # Path is relative to the test file's directory.
     for path, tf in zip(yaml_files, test_files):
@@ -393,6 +407,9 @@ async def _run_tests_locked(
                     layer=layer,
                     run_id=store.effective_run_id,
                     target=target,
+                    regrun_version=REGRUN_VERSION,
+                    api_endpoint=api_endpoint,
+                    mcp_endpoint=mcp_endpoint,
                     duration_ms=run_duration,
                     preflight_count=preflight_result.count,
                     preflight_failed=True,
@@ -417,6 +434,9 @@ async def _run_tests_locked(
                     layer=layer,
                     run_id=store.effective_run_id,
                     target=target,
+                    regrun_version=REGRUN_VERSION,
+                    api_endpoint=api_endpoint,
+                    mcp_endpoint=mcp_endpoint,
                     duration_ms=run_duration,
                     preflight_count=preflight_count,
                     sweep_count=sweep_result.count,
@@ -499,6 +519,9 @@ async def _run_tests_locked(
         layer=layer,
         run_id=store.effective_run_id,
         target=target,
+        regrun_version=REGRUN_VERSION,
+        api_endpoint=api_endpoint,
+        mcp_endpoint=mcp_endpoint,
         total=len(all_results),
         passed=sum(1 for r in all_results if r.passed),
         failed=sum(1 for r in all_results if not r.passed and not r.skipped and not r.error),

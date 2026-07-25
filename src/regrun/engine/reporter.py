@@ -49,6 +49,13 @@ class RunResult(BaseModel):
     # The lock-target slug (REGRUN_LOCK_TARGET / resolved endpoint host /
     # "default"): keys the run lock AND namespaces the artifacts dir.
     target: str = "default"
+    # Provenance: the engine version that adjudicated the run and the resolved
+    # endpoints it ran against — so a persisted report.txt can always be
+    # attributed to an engine version and a target stack (empty/None only in
+    # unit-built results).
+    regrun_version: str = ""
+    api_endpoint: str | None = None
+    mcp_endpoint: str | None = None
     total: int = 0
     passed: int = 0
     failed: int = 0
@@ -94,8 +101,18 @@ def format_text(run_result: RunResult) -> str:
         header += f" (layer: {run_result.layer})"
     lines.append(header)
     lines.append("=" * len(header))
+    # Provenance: which engine adjudicated this run, against which stack.
+    # "Why did this go red between tasks" should be one line of reading, not
+    # archaeology.
+    if run_result.regrun_version:
+        lines.append(f"regrun {run_result.regrun_version}")
+    endpoints = " / ".join(e for e in (run_result.api_endpoint, run_result.mcp_endpoint) if e)
+    if endpoints:
+        lines.append(f"endpoint: {endpoints}")
     if run_result.run_id:
         lines.append(f"run_id: {run_result.run_id}")
+    if run_result.regrun_version:
+        lines.append(f"target: {run_result.target}")
     # Preflight visibility: a CI log missing this line was run by a pre-0.8.0
     # binary that silently ignored the suite's preflight blocks.
     if run_result.preflight_count > 0:
