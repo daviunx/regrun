@@ -43,12 +43,25 @@ build-backend = "poetry.core.masonry.api"
 target-version = "py311"
 line-length = 100
 
+[tool.ruff.lint]
+# EXPLICIT, not inherited. ruff's *default* select is not a stable contract:
+# 0.16.0 widened it (I, BLE, UP, RUF, SIM, PIE, DTZ, PYI) and turned 31 findings
+# red on code that had not changed — CI installed ruff unpinned, so the gate
+# reddened with zero commits. These four groups ARE ruff's pre-0.16 default, so
+# this pins the bar already in force on main; it does not lower it.
+# The fleet-mandated 14-group select (documentation/standards/python/03-tooling.md)
+# plus line-length 100 -> 88 is a measured 156 raw findings — ratchet task 0e89a609.
+select = ["E4", "E7", "E9", "F"]
+
 [dependency-groups]
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "pytest-cov (>=6.0.0,<7.0.0)",
     "mypy (>=1.13,<3.0)",
-    "types-PyYAML (>=6.0,<7.0)"
+    "types-PyYAML (>=6.0,<7.0)",
+    # Bounded, and installed by CI from THIS declaration — a linter the gate
+    # resolves at run time is a gate that fails on someone else's release date.
+    "ruff (>=0.16.0,<0.17.0)"
 ]
 
 [tool.mypy]
