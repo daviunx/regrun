@@ -37,6 +37,10 @@ class TestMeta(BaseModel):
     default_auth: str | None = None
     env_file: str | None = None
     sql_connection: SqlConnection | None = None
+    # Strict variable resolution (default ON): an unresolved {{VAR}} in any
+    # rendered string FAILS the test instead of silently becoming a literal.
+    # Per-file opt-out for suites that deliberately template literal braces.
+    strict_vars: bool = True
 
 
 class AuthConfig(BaseModel):

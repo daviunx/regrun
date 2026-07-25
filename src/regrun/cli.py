@@ -11,6 +11,7 @@ import yaml
 
 from regrun.config import settings
 from regrun.engine import artifacts, executor
+from regrun.engine.variables import UnresolvedVariableError
 from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
 from regrun.engine.junit import format_junit
 from regrun.engine.reporter import format_json, format_text
@@ -270,6 +271,12 @@ def cli() -> None:
     default=False,
     help="Bypass the per-product run lock (allow a concurrent run for this product)",
 )
+@click.option(
+    "--no-strict-vars",
+    is_flag=True,
+    default=False,
+    help="Do not fail tests on unresolved {{VAR}} templates (render as literal, warn)",
+)
 def run(
     target: str,
     layer: str | None,
@@ -283,6 +290,7 @@ def run(
     skip_cleanup: bool,
     skip_preflight: bool,
     no_lock: bool,
+    no_strict_vars: bool,
 ) -> None:
     """Run regression tests.
 
@@ -352,11 +360,20 @@ def run(
                 skip_cleanup,
                 skip_preflight,
                 no_lock,
+                no_strict_vars,
             )
         )
     except executor.RunLockError as e:
         click.echo(str(e), err=True)
         sys.exit(2)
+    except UnresolvedVariableError as e:
+        # A file-level `variables:` declaration referenced an undefined variable
+        # (strict-vars, default on) — a suite defect, aborted before any group.
+        click.echo(
+            f"UNRESOLVED VARIABLE: {e} (opt out with meta.strict_vars: false or --no-strict-vars)",
+            err=True,
+        )
+        sys.exit(1)
 
     # Preflight failure: instant abort before any group ran. Print the failed
     # dependency + its diagnostics and exit non-zero; no group was executed.

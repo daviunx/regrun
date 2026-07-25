@@ -14,10 +14,30 @@ from regrun.models import Test
 logger = structlog.get_logger()
 
 
-class VariableStore:
-    """Dict-like store for template variables with built-in and env resolution."""
+class UnresolvedVariableError(Exception):
+    """Strict-vars failure: a rendered template references an undefined variable.
 
-    def __init__(self) -> None:
+    Raised instead of silently returning the raw template — an unresolved
+    ``{{RUN_ID}}`` otherwise names a fixture ``regr-x-{{RUN_ID}}`` byte-identical
+    on every run, a guaranteed cross-run collision that surfaces as flakes.
+    """
+
+    def __init__(self, template: str, detail: str) -> None:
+        self.template = template
+        self.detail = detail
+        super().__init__(f"{detail} (template: {template!r})")
+
+
+class VariableStore:
+    """Dict-like store for template variables with built-in and env resolution.
+
+    ``strict`` (default on) makes an unresolved ``{{VAR}}`` raise
+    :class:`UnresolvedVariableError` instead of warn-and-return-literal. The
+    executor toggles it per file from ``meta.strict_vars`` / ``--no-strict-vars``.
+    """
+
+    def __init__(self, strict: bool = True) -> None:
+        self.strict = strict
         self._vars: dict[str, str] = {}
         self._dotenv_vars: dict[str, str] = {}
         self._jinja_env = Environment(
@@ -69,6 +89,8 @@ class VariableStore:
             template = self._jinja_env.from_string(template_str)
             return template.render(self._build_context())
         except UndefinedError as e:
+            if self.strict:
+                raise UnresolvedVariableError(template_str, str(e)) from e
             logger.warning("undefined_variable", template=template_str, error=str(e))
             return template_str
 
@@ -86,10 +108,16 @@ class VariableStore:
 def render_test(test: Test, store: VariableStore) -> Test:
     """Deep-render all string fields in a test definition using the variable store.
 
-    Returns a new Test instance with all template strings resolved.
+    Returns a new Test instance with all template strings resolved. ``commands``
+    are deliberately NOT rendered here: the bash runner re-renders each command
+    at execution time so per-command ``capture:`` variables resolve mid-test —
+    rendering them now would (in strict mode) fail on captures that have not
+    happened yet.
     """
     test_data = test.model_dump(by_alias=True)
+    commands = test_data.pop("commands", None)
     rendered_data = store.render_value(test_data)
+    rendered_data["commands"] = commands
     return Test.model_validate(rendered_data)
 
 

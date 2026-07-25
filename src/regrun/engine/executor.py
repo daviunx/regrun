@@ -25,7 +25,12 @@ from regrun.engine.diagnostics import build_failure_diagnostics
 from regrun.engine.reporter import RunResult, TestResult
 from regrun.engine.run_lock import RunLockError, acquire_run_lock, release_run_lock
 from regrun.engine.retry import resolve_response_and_results
-from regrun.engine.variables import VariableStore, capture_from_response, render_test
+from regrun.engine.variables import (
+    UnresolvedVariableError,
+    VariableStore,
+    capture_from_response,
+    render_test,
+)
 from regrun.models import Test, TestFile
 from regrun.runners.base import RunnerResponse
 from regrun.runners.bash_runner import BashRunner
@@ -143,11 +148,31 @@ class _PreflightOutcome:
         self.failed_name: str | None = None
 
 
+def _effective_strict(test_file: TestFile, no_strict_vars: bool) -> bool:
+    """Per-file strict-vars mode: ``meta.strict_vars`` unless globally disabled."""
+    return test_file.meta.strict_vars and not no_strict_vars
+
+
+def _merge_file_variables(store: VariableStore, test_file: TestFile) -> None:
+    """Merge a file's declared variables into the store, SEQUENTIALLY.
+
+    Pre-rendered so ``{{timestamp}}`` etc. resolve, one variable at a time so a
+    later declaration can reference an earlier one (e.g.
+    ``TAG: "regr-vis-{{RUN_ID}}"`` after ``RUN_ID: "{{timestamp}}"``).
+    Variables already set by a previous file or a runtime capture are skipped to
+    keep identifiers like ``RUN_ID`` consistent across the entire run.
+    """
+    for key, value in test_file.variables.items():
+        if store.get(key) is None:
+            store.set(key, store.render_string(value))
+
+
 async def _run_preflight(
     yaml_files: list[Path],
     test_files: list[TestFile],
     store: VariableStore,
     verbose: bool,
+    no_strict_vars: bool = False,
 ) -> _PreflightOutcome | None:
     """Run every ``preflight:`` check across all files, once, before any group.
 
@@ -165,13 +190,13 @@ async def _run_preflight(
     # loaded). Merge them (skip-if-set) mirroring the per-file loop; capture is
     # forbidden in checks so no run state is introduced here.
     for _path, tf in zip(yaml_files, test_files):
-        store.merge(
-            {k: store.render_string(v) for k, v in tf.variables.items() if store.get(k) is None}
-        )
+        store.strict = _effective_strict(tf, no_strict_vars)
+        _merge_file_variables(store, tf)
 
     outcome = _PreflightOutcome()
     runner_cache: dict[str, Runner] = {}
     for path, test_file, check in checks:
+        store.strict = _effective_strict(test_file, no_strict_vars)
         test = check.as_test()
         runner = get_runner_for_test(test, test_file, runner_cache)
         outcome.count += 1
@@ -213,6 +238,7 @@ async def run_tests(
     skip_cleanup: bool = False,
     skip_preflight: bool = False,
     no_lock: bool = False,
+    no_strict_vars: bool = False,
 ) -> RunResult:
     """Execute all tests across all files and collect results.
 
@@ -233,7 +259,13 @@ async def run_tests(
     lock_fd = None if no_lock else acquire_run_lock(lock_product)
     try:
         return await _run_tests_locked(
-            yaml_files, test_files, fail_fast, verbose, skip_cleanup, skip_preflight
+            yaml_files,
+            test_files,
+            fail_fast,
+            verbose,
+            skip_cleanup,
+            skip_preflight,
+            no_strict_vars,
         )
     finally:
         release_run_lock(lock_fd)
@@ -246,6 +278,7 @@ async def _run_tests_locked(
     verbose: bool,
     skip_cleanup: bool,
     skip_preflight: bool,
+    no_strict_vars: bool = False,
 ) -> RunResult:
     """Run body, executed while the per-product lock is held (see ``run_tests``)."""
     store = VariableStore()
@@ -271,7 +304,9 @@ async def _run_tests_locked(
     # group. A failure aborts the run in seconds naming the failed dependency.
     preflight_count = 0
     if not skip_preflight:
-        preflight_result = await _run_preflight(yaml_files, test_files, store, verbose)
+        preflight_result = await _run_preflight(
+            yaml_files, test_files, store, verbose, no_strict_vars
+        )
         if preflight_result is not None:
             preflight_count = preflight_result.count
             if preflight_result.failed_result is not None:
@@ -290,15 +325,11 @@ async def _run_tests_locked(
     for path, test_file in zip(yaml_files, test_files):
         logger.info("processing_file", file=path.name, layer=test_file.meta.layer)
 
-        # Merge file-level variables (pre-render so {{timestamp}} etc. resolve).
-        # Skip variables already set by a previous file or runtime capture to
-        # keep identifiers like RUN_ID consistent across the entire run.
-        new_vars = {
-            k: store.render_string(v)
-            for k, v in test_file.variables.items()
-            if store.get(k) is None
-        }
-        store.merge(new_vars)
+        # Strict-vars mode is per file (meta.strict_vars, --no-strict-vars).
+        store.strict = _effective_strict(test_file, no_strict_vars)
+
+        # Merge file-level variables sequentially (skip-if-set).
+        _merge_file_variables(store, test_file)
 
         # Cache runners per type to reuse within a file
         runner_cache: dict[str, Runner] = {}
@@ -480,6 +511,33 @@ async def execute_single_test(
             file_stem=file_stem,
             assertion_results=assertion_results,
             diagnostics=diagnostics,
+        )
+
+    except UnresolvedVariableError as e:
+        # Strict-vars (default on): an unresolved {{VAR}} fails the test loudly,
+        # naming the variable and the test — a literal "{{RUN_ID}}" fixture name
+        # is byte-identical every run, a guaranteed cross-run collision.
+        duration_ms = (time.monotonic() - test_start) * 1000
+        error_msg = (
+            f"unresolved variable in test {test.id}: {e.detail} "
+            f"(template: {e.template!r}; opt out with meta.strict_vars: false "
+            f"or --no-strict-vars)"
+        )
+        logger.error("unresolved_variable_strict", test_id=test.id, error=e.detail)
+        return TestResult(
+            test_id=test.id,
+            test_name=test.name,
+            group_name=group_name,
+            passed=False,
+            error=error_msg,
+            duration_ms=duration_ms,
+            file_stem=file_stem,
+            diagnostics=build_failure_diagnostics(
+                request=None,
+                response=RunnerResponse(error=error_msg),
+                failed_assertions=[],
+                attempts=1,
+            ),
         )
 
     except Exception as e:
