@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-25
+
+Runner-owned stability guarantees: the authoring disciplines that kept suites stable (sweep-first, per-run fixture naming, parameterized bash hosts, one-run-per-stack) move from documentation into the engine. Three false-green doors of the `max_attempts: 0` family (closed in 0.8.3) are closed for good.
+
+### Fixed — false-green doors
+
+- **A test whose evaluated assertion list is EMPTY now FAILS** with an explicit `zero assertions evaluated` error. `assert: {}` or `assert: {json_path: {}}` evaluated zero assertions and passed via `all([]) == True` — a test could report PASSED having checked nothing.
+- **A typo'd assertion or test key now fails the file at load.** `Assertion` and `Test` are `extra="forbid"`: `statuss: 201` / `jsonpath:` used to be silently ignored (pydantic default `extra="ignore"`), silencing the whole block. Verified against all 71 fleet suite files before enabling — zero extra keys in use. *No opt-out*: a rejected key is a defect, fix the key.
+- **An unresolved `{{VAR}}` now FAILS the test** naming the variable and the test id (**strict-vars, DEFAULT ON**). It used to render as the raw literal with a WARN log — a capture that never landed or an undeclared `RUN_ID` named fixtures `regr-x-{{RUN_ID}}` byte-identical on every run, a guaranteed silent cross-run collision. A broken file-level `variables:` declaration aborts the run before any group. **Backcompat opt-outs:** `meta.strict_vars: false` per file, `--no-strict-vars` per run (for suites that deliberately template literal braces).
+
+### Added
+
+- **Engine-owned `RUN_ID` builtin.** Generated once per run, in the exact `{int(time)}{hex4}` format `{{timestamp}}` produces, so suites no longer need to hand-declare `RUN_ID: "{{timestamp}}"` in `00_setup.yaml`. **Backcompat: a suite that declares or captures `RUN_ID` shadows the builtin — the suite's value wins and nothing changes.** The run's effective RUN_ID is recorded in `RunResult.run_id`, printed as a `run_id:` report header line, and exported into every bash child env.
+- **First-class `sweep:` block** — the structural sweep-first guarantee. A top-level block (peer of `preflight:`, typically in the setup file) of bash/sql/httpx-shaped steps, runner-executed ONCE, after `preflight:` and before any group. A step failure ABORTS the run with exit 1 and zero groups executed (`SWEEP FAILED: <name>` + diagnostics): a suite must not create fixtures into an environment it could not sweep. `capture:` — test-level or per-command — is rejected at validation (sweeps must be capture-independent), as is `eventually:` (a sweep is a delete, not a poll). `--skip-sweep` suppresses; `--dry-run` lists steps; a passing run's header prints `sweep: N steps completed`. `cleanup: true` group semantics are untouched and remain the tail-end backstop.
+- **Bash child env injection.** `BashRunner` now passes `os.environ` + the resolved `REGRUN_API_ENDPOINT` / `REGRUN_MCP_ENDPOINT` + the run's `RUN_ID` to every command — bash steps always know the stack under test, so `${REGRUN_API_ENDPOINT}` is always correct and hardcoding a host becomes unnecessary rather than merely discouraged.
+- **Report provenance.** The report header (and `report.json`) now carries the regrun version that adjudicated the run, the resolved api/mcp endpoints, the run's `RUN_ID` and the lock target — "why did this go red between tasks" is one line of reading, not archaeology.
+- **Lint rules W007–W011:**
+  - **W007** — suite has neither a `sweep:` block nor a `cleanup: true` group sorting before its first create-shaped test (sweep-first unenforced). Directory-level.
+  - **W008** — bash `cmd` carrying a hardcoded `http(s)://` host or `psql … -d <name>` database literal not wrapped in `{{ env.get(...) }}` / `${VAR:-default}`; also fires inside `sweep:` steps.
+  - **W009** — `json_path` condition whose ONLY operator is `exists: true` (satisfied by null — use `not_empty` or a value). Inline suppress: `# lint: allow-exists`.
+  - **W010** — `$.data.*` in `json_path` or `capture` within an mcp-layer file (asserts/captures run on the POST-normalize body; `data` is hoisted). Segment-exact: `$.database` is not a hit.
+  - **W011** (best-effort) — created fixture-name prefixes (`<prefix>{{RUN_ID}}`) that appear in NO sweep step or `cleanup: true` group: orphan families listed by name. Directory-level.
+
+### Changed
+
+- **Target-aware run lock in a FIXED lock dir.** Lock key is now `product + target` (was: product alone), where target = `REGRUN_LOCK_TARGET` when set, else a sanitized host slug of the resolved API endpoint, else `default`. Two runs of the same product against DIFFERENT stacks (worktree isolates) now run concurrently; the same stack still serializes with exit 2. The lock file moved from `{REGRUN_RUNS_DIR}/{product}/.lock` to `~/.regrun/locks/{product}--{target}.lock` — deliberately independent of `REGRUN_RUNS_DIR`, which CI sets per job and which therefore gave every CI job its own lock file, silently voiding the no-concurrency guarantee. `REGRUN_LOCK_DIR` exists as an explicit override.
+- **Target-namespaced artifacts.** Run reports now land in `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/{target}/{timestamp}/` (was: no target segment) using the same target slug as the lock, so two isolates of one product never interleave reports in one folder. Tooling that globs run dirs must add one path level (fleet CI globs `regrun-runs/**/junit.xml` — unaffected).
+- **File-level `variables:` now merge sequentially**, so a later declaration can reference an earlier one (`TAG: "regr-vis-{{RUN_ID}}"` after `RUN_ID: "{{timestamp}}"`). Previously the whole dict was rendered before any value was stored, leaving such references as literals.
+- **W004 is no longer satisfied by an inline `{{timestamp}}`** — the builtin is recomputed on every render, so an inline use yields a value stored nowhere: the fixture was uncapturable AND unsweepable by any pattern the suite knows. Per-run uniqueness now requires `{{RUN_ID}}` or a run-scoped DECLARED variable (fixpoint over declarations deriving from `timestamp`/`uuid`/RUN_ID, cross-file).
+- `render_test` no longer renders bash `commands` (the bash runner re-renders each command at execution time, after per-command captures) — required for strict-vars to coexist with mid-test capture chains; behavior-neutral otherwise.
+
+### Compatibility
+
+- `sweep:` is **silently ignored by a pre-0.9.0 binary** (unknown key), mitigated by lint W007 + the `sweep:` report header line. `meta.strict_vars` is likewise ignored by older binaries (which never fail on unresolved variables anyway).
+- The two deliberate behavior-change opt-outs are **strict-vars** (`meta.strict_vars: false` / `--no-strict-vars`) and **sweep execution** (`--skip-sweep`). Everything else is either fail-loud-on-defect (no opt-out by design) or backcompat-by-precedence (suite-declared `RUN_ID` wins).
+
 ## [0.8.3] - 2026-07-25
 
 ### Fixed
