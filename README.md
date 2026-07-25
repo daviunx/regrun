@@ -3,7 +3,7 @@
 Deterministic YAML-driven regression test runner for APIs, MCP servers, and WebSocket streams.
 
 [![PyPI](https://img.shields.io/pypi/v/regrun)](https://pypi.org/project/regrun/)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ---
@@ -20,7 +20,7 @@ regrun lets you define regression tests as YAML files and run them against live 
 pip install regrun
 ```
 
-Requires Python 3.12 or later.
+Requires Python 3.11 or later.
 
 The MCP runner requires `uvx` and the `fastmcp` CLI available on `PATH`:
 

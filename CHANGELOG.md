@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-07-25
+
+### Fixed
+
+- **`eventually: {max_attempts: 0}` reported a test as PASSED having evaluated zero assertions.** `EventuallyConfig.max_attempts` carried no lower bound, so at `0` the retry loop body never ran, `run_with_retry` returned `(None, [])`, and the executor's `all_passed = all(assertion_results)` — `all([])` being `True` — produced a green verdict with no crash, because the `None` response is only dereferenced on the failure branch. Any test could therefore be silenced into a false pass, and since regrun adjudicates every consumer's regression suite that verdict propagated downstream. `max_attempts` is now constrained `ge=1`, and `interval` / `backoff` / `initial_delay` are constrained `ge=0` (negative timings previously reached `asyncio.sleep` unchallenged). `run_with_retry` additionally asserts the invariant rather than assuming it, so relaxing the constraint fails loudly instead of silently returning to the false-green path.
+
+### Changed
+
+- **CI now runs the test suite, and the release is gated on it.** `test.yml` gained `Tests` (pytest + coverage, matrix 3.11/3.12/3.13) and `Typecheck` (mypy) jobs; previously it ran only `lint` and `import-test`, so a populated `tests/` tree never executed in CI and a green pipeline proved only that the package imported. `publish.yml` now calls `test.yml` as a reusable workflow and depends on it — a tag push with a red suite publishes nothing. OIDC `id-token: write` is scoped to the publish job alone instead of the whole workflow.
+- **Type checking and coverage enforcement.** mypy is now a blocking CI job at default strictness, with `plugins = ["pydantic.mypy"]` and `python_version = "3.11"` (tracking the package's minimum `requires-python`, not the newest interpreter). The coverage floor moved from `fail_under = 38` — 34 points below actual — to `70`, matching measured branch coverage rounded down.
+- Lint scope widened from `src/` to `src/ tests/`.
+
+### Security
+
+- **Every third-party GitHub Action is now pinned to a full commit SHA.** `pypa/gh-action-pypi-publish@release/v1` was a *branch* ref executing inside the only job that holds `id-token: write` — the OIDC credential authorised to publish to pypi.org as regrun. A force-push or upstream compromise on that branch would have run attacker-controlled code holding that credential, publishing a backdoored package to everyone who installs it. `actions/checkout`, `actions/setup-python` and the three `docker/*` actions are pinned for the same reason. There is no lock file for GitHub Actions — the SHA in the workflow is the only pin that exists.
+- **Build is now isolated from publish.** `python -m build` downloads and executes the build backend (`poetry-core`, unpinned and unhashed) from PyPI, and previously did so in the same job as the OIDC mint. It now runs in a separate job carrying no `id-token`, handing over a `dist` artifact; the publish job checks out nothing and runs only the download + upload steps.
+- `persist-credentials: false` on every checkout — the default writes `GITHUB_TOKEN` into `.git/config`, where later steps (including fork-authored test code on a public repo) can read it.
+
+### Docs
+
+- `README.md` said "Requires Python 3.12 or later" while `requires-python` declared `>=3.11` and CI tested 3.11. The packaging metadata is the contract pip and PyPI enforce, so the README was corrected to 3.11+ rather than narrowing support and breaking consumers already resolving on 3.11.
+
 ## [0.8.0] - 2026-07-17
 
 ### Added

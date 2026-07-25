@@ -59,7 +59,14 @@ def test_test_file_parses_preflight_list() -> None:
                 {
                     "id": 5,
                     "name": "A",
-                    "tests": [{"id": "A.1", "name": "t", "commands": [{"cmd": "true"}], "assert": {"last_exit_code": 0}}],
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "commands": [{"cmd": "true"}],
+                            "assert": {"last_exit_code": 0},
+                        }
+                    ],
                 }
             ],
         }

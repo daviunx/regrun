@@ -41,14 +41,25 @@ def test_test_meta_runner_literal_accepts_sql() -> None:
 
 def test_test_runner_literal_accepts_sql() -> None:
     t = models.Test.model_validate(
-        {"id": "Q.1", "name": "q", "runner": "sql", "sql": "SELECT 1;", "assert": {"last_exit_code": 0}}
+        {
+            "id": "Q.1",
+            "name": "q",
+            "runner": "sql",
+            "sql": "SELECT 1;",
+            "assert": {"last_exit_code": 0},
+        }
     )
     assert t.runner == "sql"
 
 
 def test_test_has_sql_field() -> None:
     t = models.Test.model_validate(
-        {"id": "Q.1", "name": "q", "sql": "SELECT count(*) FROM t;", "assert": {"last_exit_code": 0}}
+        {
+            "id": "Q.1",
+            "name": "q",
+            "sql": "SELECT count(*) FROM t;",
+            "assert": {"last_exit_code": 0},
+        }
     )
     assert t.sql == "SELECT count(*) FROM t;"
 
@@ -103,7 +114,12 @@ def test_test_file_accepts_sql_runner_and_connection() -> None:
                     "id": 5,
                     "name": "SQL",
                     "tests": [
-                        {"id": "Q.1", "name": "q", "sql": "SELECT 1;", "assert": {"last_exit_code": 0}}
+                        {
+                            "id": "Q.1",
+                            "name": "q",
+                            "sql": "SELECT 1;",
+                            "assert": {"last_exit_code": 0},
+                        }
                     ],
                 }
             ],
@@ -171,7 +187,9 @@ def _load(monkeypatch, *, docker: bool, psql_stdout: bytes = b"", psql_rc: int =
     """
     sql_mod = importlib.import_module("regrun.runners.sql_runner")
     rec = _Recorder()
-    monkeypatch.setattr(sql_mod.asyncio, "create_subprocess_exec", _make_exec(rec, psql_stdout, psql_rc))
+    monkeypatch.setattr(
+        sql_mod.asyncio, "create_subprocess_exec", _make_exec(rec, psql_stdout, psql_rc)
+    )
     monkeypatch.setattr(
         sql_mod.shutil,
         "which",

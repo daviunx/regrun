@@ -36,7 +36,12 @@ def _passing_suite() -> dict:
                 "name": "API Surface",
                 "priority": "high",
                 "tests": [
-                    {"id": "API.1", "name": "ok", "commands": [{"cmd": "true"}], "assert": {"last_exit_code": 0}}
+                    {
+                        "id": "API.1",
+                        "name": "ok",
+                        "commands": [{"cmd": "true"}],
+                        "assert": {"last_exit_code": 0},
+                    }
                 ],
             }
         ],

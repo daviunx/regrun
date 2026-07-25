@@ -97,6 +97,11 @@ async def run_with_retry(
         )
 
     # Budget exhausted: return the last (failing) attempt without raising.
+    # ``response`` is always bound here because EventuallyConfig.max_attempts is
+    # constrained ge=1, so the loop body runs at least once. Asserted rather
+    # than assumed: if that constraint is ever relaxed, this fails loudly
+    # instead of returning None and letting `all([])` report a green test.
+    assert response is not None, "max_attempts must be >= 1 (enforced by EventuallyConfig)"
     return response, results
 
 

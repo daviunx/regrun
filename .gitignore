@@ -45,3 +45,6 @@ poetry.lock
 
 # Test results output
 results/
+
+# uv (not the project toolchain -- Poetry is; see CLAUDE.md)
+uv.lock

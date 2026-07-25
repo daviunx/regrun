@@ -111,9 +111,7 @@ def test_immediate_success_returns_on_first_attempt(monkeypatch):
         return _passing_results()
 
     config = _EventuallyConfig(max_attempts=5, interval=0.1)
-    response, results = asyncio.run(
-        run_with_retry(execute, assert_fn, config, "TC-1")
-    )
+    response, results = asyncio.run(run_with_retry(execute, assert_fn, config, "TC-1"))
 
     assert execute.calls == 1  # no retry
     assert all(r.passed for r in results)
@@ -149,9 +147,7 @@ def test_retry_until_pass_returns_winning_attempt(monkeypatch):
         return win_response if execute.calls >= 4 else base
 
     config = _EventuallyConfig(max_attempts=10, interval=0.1)
-    response, results = asyncio.run(
-        run_with_retry(execute_fn, assert_fn, config, "TC-2")
-    )
+    response, results = asyncio.run(run_with_retry(execute_fn, assert_fn, config, "TC-2"))
 
     assert execute.calls == 4  # exactly four execute calls
     assert all(r.passed for r in results)
@@ -176,9 +172,7 @@ def test_budget_exhaustion_returns_last_failure_without_raising(monkeypatch):
         return _failing_results()  # never passes
 
     config = _EventuallyConfig(max_attempts=3, interval=0.1)
-    response, results = asyncio.run(
-        run_with_retry(execute_fn, assert_fn, config, "TC-3")
-    )
+    response, results = asyncio.run(run_with_retry(execute_fn, assert_fn, config, "TC-3"))
 
     assert execute_fn.calls == 3  # type: ignore[attr-defined]  # exactly three calls
     assert results == _failing_results()  # last attempt's failing results
@@ -196,9 +190,7 @@ def test_backoff_multiplier_increases_sleep_intervals(monkeypatch):
     def assert_fn(_resp):
         return _failing_results()  # never passes -> exhaust all attempts
 
-    config = _EventuallyConfig(
-        max_attempts=4, interval=1.0, backoff=2.0, initial_delay=0.0
-    )
+    config = _EventuallyConfig(max_attempts=4, interval=1.0, backoff=2.0, initial_delay=0.0)
     asyncio.run(run_with_retry(execute, assert_fn, config, "TC-4"))
 
     # 4 attempts -> 3 between-attempt sleeps: interval * backoff**index
@@ -216,9 +208,7 @@ def test_fixed_interval_when_backoff_is_one(monkeypatch):
     def assert_fn(_resp):
         return _failing_results()
 
-    config = _EventuallyConfig(
-        max_attempts=3, interval=0.5, backoff=1.0, initial_delay=0.0
-    )
+    config = _EventuallyConfig(max_attempts=3, interval=0.5, backoff=1.0, initial_delay=0.0)
     asyncio.run(run_with_retry(execute, assert_fn, config, "TC-5"))
 
     # 3 attempts -> 2 between-attempt sleeps, all equal to the fixed interval
@@ -278,9 +268,7 @@ def test_execute_exception_is_caught_and_wrapped(monkeypatch):
         return _failing_results()
 
     config = _EventuallyConfig(max_attempts=3, interval=0.1)
-    response, results = asyncio.run(
-        run_with_retry(execute_fn, assert_fn, config, "TC-7")
-    )
+    response, results = asyncio.run(run_with_retry(execute_fn, assert_fn, config, "TC-7"))
 
     # No raise escaped run_with_retry; the error was wrapped in a RunnerResponse
     assert isinstance(response, RunnerResponse)
