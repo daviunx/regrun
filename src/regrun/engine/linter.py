@@ -16,6 +16,11 @@ E002 err  An mcp-layer file (``runner: fastmcp`` or ``default_auth: mcp``)
           sort before it (the 16x-before-17_cleanup rule).
 E003 err  A test has an ``auth:`` key with a null value (the ``auth: none``
           string-literal trap — bare ``auth:`` parses as YAML null).
+E004 err  A test on an auth-consuming runner (httpx/fastmcp/websocket)
+          references an auth profile — via ``auth:`` or ``meta.default_auth``
+          — that is not defined in THIS file's ``auth:`` block. Profiles are
+          per-file; before regrun 0.9.1 the request silently went out with NO
+          credentials (401-instead-of-403 masquerading as a product bug).
 W001 warn An MCP tool test asserts ``is_error`` with no ``json_path`` block
           (asserts the call didn't error, not that it did the right thing).
 W002 warn ``equals``/``contains`` on a positional array json_path (``[0]`` /
@@ -74,6 +79,12 @@ from pydantic import BaseModel
 
 ERROR = "error"
 WARN = "warn"
+
+# Runner types whose requests carry auth credentials. Keep in lockstep with
+# ``regrun.engine.executor.AUTH_CONSUMING_RUNNERS`` (the runtime guard) — the
+# linter stays import-free of the engine on purpose; a unit test asserts the
+# two sets are equal.
+_AUTH_CONSUMING_RUNNERS = frozenset({"httpx", "fastmcp", "websocket"})
 
 # Variables that never count as "captured elsewhere" for W005.
 _BUILTIN_VARS = {"RUN_ID", "timestamp", "date", "uuid"}
@@ -344,6 +355,12 @@ def _lint_file(
 
     groups = raw.get("groups") or []
 
+    # E004 inputs: this file's declared auth profiles + file-level defaults.
+    _meta = raw.get("meta") or {}
+    meta_runner = _meta.get("runner")
+    default_auth = _meta.get("default_auth")
+    auth_profiles = set((raw.get("auth") or {}).keys())
+
     # W008 on sweep steps too — a sweep with a hardcoded host sweeps the wrong
     # stack, which is exactly the failure class the block exists to prevent.
     for step in raw.get("sweep") or []:
@@ -408,6 +425,33 @@ def _lint_file(
                         message="auth: key is null (use the string literal 'none')",
                     )
                 )
+
+            # E004 — auth profile referenced but not defined in THIS file.
+            # Mirrors the executor's runtime guard (unknown_auth_profile_error):
+            # profiles are per-file, and a dangling reference used to degrade
+            # to an unauthenticated request.
+            effective_runner = t.get("runner") or meta_runner
+            if effective_runner in _AUTH_CONSUMING_RUNNERS:
+                effective_auth = t.get("auth") if t.get("auth") is not None else default_auth
+                if (
+                    isinstance(effective_auth, str)
+                    and effective_auth != "none"
+                    and effective_auth not in auth_profiles
+                ):
+                    source = "auth" if t.get("auth") is not None else "meta.default_auth"
+                    findings.append(
+                        LintFinding(
+                            file=fname,
+                            test_id=tid,
+                            rule="E004",
+                            severity=ERROR,
+                            message=(
+                                f"{source}={effective_auth!r} is not defined in this "
+                                f"file's auth: block (profiles are per-file — "
+                                f"redeclare it here or use 'none')"
+                            ),
+                        )
+                    )
 
             # W001 — MCP tool test asserting is_error with no json_path
             if t.get("tool") and "is_error" in assertion and "json_path" not in assertion:

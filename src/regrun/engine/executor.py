@@ -127,6 +127,40 @@ def create_runner_for_type(
     return None
 
 
+# Runner types whose requests carry auth credentials — the only ones where a
+# dangling auth-profile reference silently weakens the request (bash/sql
+# runners never read auth config).
+AUTH_CONSUMING_RUNNERS = frozenset({"httpx", "fastmcp", "websocket"})
+
+
+def unknown_auth_profile_error(test: Test, test_file: TestFile) -> str | None:
+    """Return an error string when the test references an undefined auth profile.
+
+    Auth profiles are PER-FILE (only captured variables propagate cross-file via
+    the VariableStore). Before 0.9.1 an undefined ``auth:`` reference degraded
+    to a warning and the request went out with NO credentials — surfacing as a
+    confusing 401-instead-of-403 that reads like a product bug (rally A15,
+    2026-07-26). Same closed-world doctrine as strict-vars: a dangling
+    reference fails loudly, never silently weakens the request.
+    """
+    runner_type = test.runner or test_file.meta.runner
+    if runner_type not in AUTH_CONSUMING_RUNNERS:
+        return None
+    auth_name = test.auth or test_file.meta.default_auth
+    if not auth_name or auth_name == "none":
+        return None
+    if auth_name in test_file.auth:
+        return None
+    defined = ", ".join(sorted(test_file.auth)) or "<none>"
+    source = "auth" if test.auth else "meta.default_auth"
+    return (
+        f"unknown auth profile in test {test.id}: {source}={auth_name!r} is not "
+        f"defined in this file's auth: block (defined: {defined}). Auth profiles "
+        f"are per-file — redeclare the profile in this file (its token variable "
+        f"still propagates via the VariableStore), or use 'none'."
+    )
+
+
 def get_runner_for_test(
     test: Test,
     test_file: TestFile,
@@ -476,6 +510,27 @@ async def _run_tests_locked(
             )
 
             for test in group.tests:
+                # Closed-world auth references (0.9.1): an ``auth:`` profile not
+                # defined in THIS file hard-fails the test instead of silently
+                # sending the request with no credentials.
+                auth_error = unknown_auth_profile_error(test, test_file)
+                if auth_error:
+                    logger.error("unknown_auth_profile", test_id=test.id, error=auth_error)
+                    all_results.append(
+                        TestResult(
+                            test_id=test.id,
+                            test_name=test.name,
+                            group_name=group.name,
+                            passed=False,
+                            error=auth_error,
+                            file_stem=path.stem,
+                        )
+                    )
+                    if fail_fast and not force_run_cleanup:
+                        logger.warning("fail_fast_triggered", test_id=test.id)
+                        aborted = True
+                    continue
+
                 runner = get_runner_for_test(test, test_file, runner_cache, store)
                 if runner is None:
                     effective_type = test.runner or test_file.meta.runner

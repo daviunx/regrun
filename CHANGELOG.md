@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-26
+
+### Fixed — false-green door: dangling auth-profile references
+
+- **A test referencing an auth profile not defined in ITS OWN file now FAILS** with `unknown auth profile in test <id>` — before any request is built. Auth profiles are per-file (only captured variables propagate cross-file via the VariableStore); previously a dangling `auth:` or `meta.default_auth` reference logged a WARN and sent the request with **no credentials**, surfacing as a 401-instead-of-403 that reads like a product bug. Same closed-world doctrine as strict-vars. Scoped to auth-consuming runners (`httpx`/`fastmcp`/`websocket`) — bash/sql tests never read auth config. *No opt-out*: a dangling reference is a defect, define the profile or use `none`.
+
+### Added
+
+- **Lint rule E004** (error) — a test on an auth-consuming runner references an auth profile absent from that file's `auth:` block (via `auth:` or `meta.default_auth`). The static twin of the runtime guard; fleet-scanned clean on all four product suites before enabling.
+
 ## [0.9.0] - 2026-07-25
 
 Runner-owned stability guarantees: the authoring disciplines that kept suites stable (sweep-first, per-run fixture naming, parameterized bash hosts, one-run-per-stack) move from documentation into the engine. Three false-green doors of the `max_attempts: 0` family (closed in 0.8.3) are closed for good.
