@@ -48,3 +48,6 @@ results/
 
 # uv (not the project toolchain -- Poetry is; see CLAUDE.md)
 uv.lock
+
+# Archived junk (screenshots, scratch, backups)
+_archive/
