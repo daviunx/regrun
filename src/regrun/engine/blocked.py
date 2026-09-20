@@ -70,15 +70,28 @@ class BlockedTracker:
     Blocking is transitive by construction: a blocked file is recorded as a
     blocker in its own right, so a file depending on it is blocked too without
     the caller walking the graph a second time.
+
+    A failed SETUP file is a separate gate rather than a graph edge. Setup files
+    are the bootstrap contract of the whole run and never declare ``requires:``
+    on each other, so no closure can express "the auth bootstrap died, therefore
+    the seed file after it proves nothing". Once any setup file fails, every
+    later file is blocked by it whatever it declares, and the FIRST such failure
+    stays the blocker so the report names the root cause.
     """
 
     def __init__(self) -> None:
         self.failed: set[str] = set()
         self.blocked: set[str] = set()
+        self.setup_failure: str | None = None
 
-    def record_failure(self, stem: str) -> None:
-        """Mark a file as having failed on its own merits."""
+    def record_failure(self, stem: str, setup: bool = False) -> None:
+        """Mark a file as having failed on its own merits.
+
+        ``setup`` marks it as a ``layer: setup`` file, which arms the setup gate.
+        """
         self.failed.add(stem)
+        if setup and self.setup_failure is None:
+            self.setup_failure = stem
 
     def record_blocked(self, stem: str) -> None:
         """Mark a file as blocked, which makes it a blocker for its own dependents."""
@@ -87,8 +100,12 @@ class BlockedTracker:
     def blocker_for(self, dependencies: set[str]) -> str | None:
         """The stem blocking a file with this dependency closure, or None if clean.
 
-        With more than one blocker in the closure the canonically first stem is
-        reported, so the same run always names the same blocker.
+        A failed setup file outranks everything in the closure: it is the deeper
+        cause, and a consumer's own producer can only have been blocked by it.
+        Otherwise, with more than one blocker in the closure the canonically
+        first stem is reported, so the same run always names the same blocker.
         """
+        if self.setup_failure is not None:
+            return self.setup_failure
         candidates = dependencies & (self.failed | self.blocked)
         return min(candidates) if candidates else None

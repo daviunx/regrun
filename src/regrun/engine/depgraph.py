@@ -11,8 +11,10 @@ Two kinds of dependency exist:
 * IMPLICIT — every ``layer: setup`` file is a dependency of every non-setup
   file. Setup is the bootstrap contract nobody declares. Setup files carry no
   implicit dependency of their own, so setup ordering can never surface as a
-  graph cycle; "a failed setup file blocks every later file" is an executor
-  clause, not an edge.
+  graph cycle. "A failed setup file blocks every later file" therefore cannot be
+  an edge here: it is the setup gate in ``blocked.BlockedTracker``, applied by
+  the executor to every file that follows a failed setup file, and the only
+  mechanism covering one setup file blocking the NEXT one.
 
 Every result is deterministic and independent of input order: a graph built
 from a shuffled node list answers identically, so a report or a shard plan
@@ -21,7 +23,13 @@ never moves for a reason nobody can see.
 
 from dataclasses import dataclass, field
 
+# Layer rank for the canonical run order (layer rank, then filename). Defined
+# HERE, once: the runner, the linter and the shard planner must all consume the
+# same order, and a second copy is a silent desync waiting for a fifth layer.
+LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
+
 __all__ = [
+    "LAYER_ORDER",
     "FileNode",
     "Graph",
     "SelfDependencyError",

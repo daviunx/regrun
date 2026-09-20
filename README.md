@@ -172,7 +172,9 @@ artifacts:
 
 **Declared file dependencies:** A file lists the files it consumes captured values from in `meta.requires:` (stems, no `.yaml`). The setup layer is the bootstrap contract every file already depends on and is never listed. Declaring a dependency buys three things: the file selectors pull the producer in automatically, sharding keeps a file and its closure together, and a failed producer reports its consumers as BLOCKED. Lint rule W012 finds the couplings a suite has not declared yet.
 
-**BLOCKED:** When a file fails, every file that requires it (directly or transitively) is not run, and its tests are reported `BLOCKED` naming the file that blocked them. Blocked tests are a sub-kind of skipped: one broken producer yields one actionable failure instead of a cascade of red that all has the same cause. The exit code is driven by real failures and errors, so a run whose only red is a blocked consumer still points at the producer.
+A `requires:` entry that names no file in the suite directory, names the file itself, or closes a cycle aborts the run before anything executes: there is no order that satisfies it, and dropping it silently would leave the run green with blocked-skip quietly disabled. A producer left out by your own narrowing (`--file`, `--layer`, `--shard`) is the one tolerated case, because a filtered run cannot judge a producer it never loaded.
+
+**BLOCKED:** When a file fails, every file that requires it (directly or transitively) is not run, and its tests are reported `BLOCKED` naming the file that blocked them. A failed `layer: setup` file blocks every later file, declared dependency or not: setup is the bootstrap contract nobody declares, so a seed file reporting green after a dead auth bootstrap would send the reader to the wrong place. Blocked tests are a sub-kind of skipped: one broken producer yields one actionable failure instead of a cascade of red that all has the same cause. The exit code is driven by real failures and errors, so a run whose only red is a blocked consumer still points at the producer.
 
 **Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file — for example `RUN_ID` defined in setup — is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
 
@@ -212,8 +214,8 @@ regrun run TEST_DIR [OPTIONS]
 | `--no-strict-vars` | flag | false | Render an unresolved `{{VAR}}` as a literal and warn, instead of failing the test |
 | `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match |
 | `--rerun-failed` | flag | false | Run only the files that failed, errored or were blocked in the latest report for this product and target |
-| `--shard` | `k/n` | — | Run shard `k` of `n`. **Each shard requires its own database and index prefix** |
-| `--budget-seconds` | float | — | Fail the run when its wall time exceeds this many seconds |
+| `--shard` | `k/n` | none | Run shard `k` of `n`. **Each shard requires its own database and index prefix** |
+| `--budget-seconds` | float | none | Fail the run when its wall time exceeds this many seconds |
 
 **Time budgets** are off unless declared. A file declares its own ceiling with `meta.budget_seconds`; `--budget-seconds` covers the whole run. An overrun reds the run and the report names the file and the overrun, but it never reclassifies a test: the test passed, the budget did not.
 

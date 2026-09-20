@@ -332,6 +332,12 @@ async def _run_files(
     A file whose dependency closure contains a FAILED file is not executed: its
     tests are reported BLOCKED naming the blocker, so one broken producer yields
     one failure to read instead of a cascade. Its cleanup groups still run.
+
+    A failed ``layer: setup`` file blocks every LATER file, declared dependency
+    or not (``BlockedTracker``'s setup gate): setup files never declare
+    ``requires:`` on each other, so the graph cannot carry that edge, and a seed
+    file reporting green after a dead auth bootstrap sends the reader to the
+    wrong place.
     """
     graph = build(file_nodes(yaml_files, test_files))
     tracker = BlockedTracker()
@@ -358,7 +364,7 @@ async def _run_files(
 
         cleanup_groups = {g.name for g in test_file.groups if g.cleanup}
         if blocker is None and file_failed(file_results, cleanup_groups):
-            tracker.record_failure(path.stem)
+            tracker.record_failure(path.stem, setup=test_file.meta.layer == "setup")
         all_results.extend(file_results)
 
     return all_results

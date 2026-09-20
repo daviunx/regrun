@@ -20,16 +20,13 @@ import yaml
 
 from regrun.config import settings
 from regrun.engine import artifacts, rerun, shardplan
-from regrun.engine.depgraph import FileNode, build, closure
+from regrun.engine.depgraph import LAYER_ORDER, FileNode, build, closure, detect_cycles
 from regrun.engine.run_lock import derive_lock_target
 from regrun.models import Group, TestFile
 
 logger = structlog.get_logger()
 
 CONFIG_FILENAME = "regrun.yaml"
-
-# Layer rank for the canonical run order. Unknown layers sort last.
-LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
 
 __all__ = [
     "CONFIG_FILENAME",
@@ -44,6 +41,7 @@ __all__ = [
     "parse_group_ids",
     "parse_yaml_file",
     "resolve_target",
+    "validate_requires",
 ]
 
 
@@ -233,6 +231,43 @@ def _parse_files(yaml_files: list[Path]) -> RunPlan:
     return RunPlan(paths=paths, test_files=test_files)
 
 
+def validate_requires(test_dir: Path, plan: RunPlan) -> None:
+    """Reject a ``meta.requires:`` no run can satisfy, before anything executes.
+
+    An unknown stem (a typo, or a producer someone renamed) and a self-reference
+    are suite defects, and so is a cycle: there is no order that satisfies it.
+    Dropping any of them silently would leave the run green with blocked-skip
+    quietly disabled for that dependency, which is the invisible coupling the
+    declaration exists to remove. Same doctrine as an unknown auth profile: fail
+    loud, at load.
+
+    "Unknown" is judged against every file in the suite DIRECTORY, not against
+    the files this run loaded, so the operator's own narrowing (``--file``,
+    ``--layer``, ``--shard``) never turns into an error about a producer they
+    deliberately left out.
+    """
+    universe = {path.stem for path in test_dir.glob("*.yaml")}
+    for path, test_file in zip(plan.paths, plan.test_files):
+        for required in test_file.meta.requires:
+            if required == path.stem:
+                raise click.ClickException(
+                    f"{path.name}: meta.requires lists the file itself ('{required}')."
+                )
+            if required not in universe:
+                known = ", ".join(sorted(universe))
+                raise click.ClickException(
+                    f"{path.name}: meta.requires names '{required}', which is not a test file "
+                    f"in {test_dir}. Known files: {known}"
+                )
+
+    cycles = detect_cycles(build(file_nodes(plan.paths, plan.test_files)))
+    if cycles:
+        rendered = "; ".join(" -> ".join([*cycle, cycle[0]]) for cycle in cycles)
+        raise click.ClickException(
+            f"meta.requires forms a cycle no run order can satisfy: {rendered}"
+        )
+
+
 def _filter_plan(
     plan: RunPlan,
     layer: str | None,
@@ -279,10 +314,13 @@ def _apply_endpoint_overrides(test_files: list[TestFile]) -> None:
 def file_nodes(paths: list[Path], test_files: list[TestFile]) -> list[FileNode]:
     """The dependency-graph nodes for the files a run actually loaded.
 
-    ``requires:`` entries naming a file this run did not load are dropped, as is
-    a self-reference: a filtered run cannot judge a producer it never executed
-    and must not die over it. Both are suite defects, and the linter's E005 is
-    the loud gate for them.
+    ``requires:`` entries naming a file this run did not load are dropped: a
+    filtered run cannot judge a producer it never executed. That is the ONLY
+    tolerated case, and it is reachable only through the operator's own
+    narrowing, because ``validate_requires`` has already rejected every entry
+    that names no file in the suite directory. The self-reference guard is kept
+    as a belt-and-braces for callers that skip validation (the linter builds its
+    own nodes from unvalidated YAML).
     """
     stems = {path.stem for path in paths}
     return [
@@ -413,9 +451,12 @@ def build_run_plan(
     yaml_files = discover_yaml_files(test_path, layer, skip_setup)
     logger.info("discovered_files", count=len(yaml_files), test_dir=str(test_path), layer=layer)
 
+    parsed = _parse_files(yaml_files)
+    validate_requires(test_path, parsed)
+
     # File selection runs BEFORE the group filters, so a closure member can be
     # recognised as a dependency and kept whole.
-    plan, direct = _apply_selection(_parse_files(yaml_files), file_patterns, rerun_failed, shard)
+    plan, direct = _apply_selection(parsed, file_patterns, rerun_failed, shard)
     plan = _filter_plan(plan, layer, group_ids, priority, skip_cleanup, direct)
     if not plan.test_files:
         raise click.ClickException("No test files matched the given filters.")

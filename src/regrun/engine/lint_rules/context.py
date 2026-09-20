@@ -19,16 +19,19 @@ WARN = "warn"
 # a suite file (W012) — the engine mints them.
 BUILTIN_VARS = {"RUN_ID", "timestamp", "date", "uuid"}
 VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
+# The LEADING identifier of any template expression, however it continues:
+# ``{{ VAR }}``, ``{{ VAR | default('x') }}``, ``{{ VAR.field }}``,
+# ``{{VAR}}``. W012 asks "is this value produced elsewhere", which is true of
+# a filtered or dotted reference just as much as a bare one, so the exact-match
+# ``VAR_RE`` (which the other rules need) would read those as no reference at
+# all. Template GLOBALS are not variables and are excluded by name.
+VAR_REF_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)")
+TEMPLATE_GLOBALS = {"env"}
 TEST_ID_RE = re.compile(r'^\s*-?\s*id:\s*["\']?([A-Za-z][A-Za-z0-9_.\-]*)')
 
 ALLOW_POSITIONAL = "# lint: allow-positional"
 ALLOW_NOCREATE = "# lint: allow-nocreate"
 ALLOW_EXISTS = "# lint: allow-exists"
-
-# Canonical run order: layer rank then filename. The linter must consume the
-# same order the runner derives (``selection.discover_yaml_files``), never re-derive
-# a different one.
-LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
 
 
 class LintFinding(BaseModel):

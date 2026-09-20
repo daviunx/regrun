@@ -17,12 +17,14 @@ is a defect in the declaration rather than a judgement call.
 
 from pathlib import Path
 
-from regrun.engine.depgraph import FileNode, build, detect_cycles
+# LAYER_ORDER comes from depgraph, the one place it is defined: E005's
+# order check must use the exact order the runner runs files in.
+from regrun.engine.depgraph import LAYER_ORDER, FileNode, Graph, build, closure, detect_cycles
 from regrun.engine.lint_rules.context import (
     BUILTIN_VARS,
     ERROR,
-    LAYER_ORDER,
-    VAR_RE,
+    TEMPLATE_GLOBALS,
+    VAR_REF_RE,
     WARN,
     LintFinding,
     iter_strings,
@@ -57,11 +59,16 @@ def _captured(raw: dict) -> set[str]:
 
 
 def _referenced(raw: dict) -> set[str]:
-    """Every ``{{VAR}}`` name the file's groups reference."""
+    """Every variable name the file's groups reference, in any template form.
+
+    ``{{ VAR | default('x') }}`` and ``{{ VAR.field }}`` reference VAR as much as
+    ``{{ VAR }}`` does, so the leading identifier is what counts. Template
+    globals such as ``env`` are not variables and no file produces them.
+    """
     names: set[str] = set()
     for text in iter_strings(raw.get("groups") or []):
-        names.update(VAR_RE.findall(text))
-    return names
+        names.update(VAR_REF_RE.findall(text))
+    return names - TEMPLATE_GLOBALS
 
 
 def _nodes(parsed: Parsed) -> list[FileNode]:
@@ -81,19 +88,9 @@ def _nodes(parsed: Parsed) -> list[FileNode]:
     ]
 
 
-def _closures(parsed: Parsed) -> dict[str, set[str]]:
-    """Each stem's declared dependency closure, cycle-safe and self-excluding."""
-    declared = {path.stem: _requires(raw) for path, raw, _text in parsed}
-
-    def walk(stem: str, seen: set[str]) -> set[str]:
-        for required in declared.get(stem, []):
-            if required in seen:
-                continue
-            seen.add(required)
-            walk(required, seen)
-        return seen
-
-    return {stem: walk(stem, set()) for stem in declared}
+def _closures(graph: Graph) -> dict[str, set[str]]:
+    """Each stem's dependency closure, from the one closure implementation there is."""
+    return {stem: closure(graph, stem) for stem in graph.order}
 
 
 def _producers(parsed: Parsed) -> dict[str, list[tuple[str, str]]]:
@@ -105,7 +102,7 @@ def _producers(parsed: Parsed) -> dict[str, list[tuple[str, str]]]:
     return producers
 
 
-def _foreign_captures(parsed: Parsed) -> list[LintFinding]:
+def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
     """W012 — a value another file produces, used without declaring the dependency.
 
     Cleared by declaring ``requires:`` (directly or transitively), by producing
@@ -114,7 +111,7 @@ def _foreign_captures(parsed: Parsed) -> list[LintFinding]:
     declared.
     """
     producers = _producers(parsed)
-    closures = _closures(parsed)
+    closures = _closures(graph)
     setup_stems = {path.stem for path, raw, _text in parsed if _layer(raw) == "setup"}
 
     findings: list[LintFinding] = []
@@ -155,7 +152,7 @@ def _order_index(parsed: Parsed) -> dict[str, int]:
     return {path.stem: index for index, (path, _raw) in enumerate(ordered)}
 
 
-def _bad_requires(parsed: Parsed) -> list[LintFinding]:
+def _bad_requires(parsed: Parsed, graph: Graph) -> list[LintFinding]:
     """E005 — a ``requires:`` no run can satisfy: unknown, self, later, or cyclic."""
     stems = {path.stem for path, _raw, _text in parsed}
     position = _order_index(parsed)
@@ -182,7 +179,7 @@ def _bad_requires(parsed: Parsed) -> list[LintFinding]:
             )
 
     names = {path.stem: path.name for path, _raw, _text in parsed}
-    for cycle in detect_cycles(build(_nodes(parsed))):
+    for cycle in detect_cycles(graph):
         findings.append(
             LintFinding(
                 file=names[cycle[0]],
@@ -196,5 +193,10 @@ def _bad_requires(parsed: Parsed) -> list[LintFinding]:
 
 
 def check_directory(parsed: Parsed) -> list[LintFinding]:
-    """W012 + E005 — both are cross-file by nature."""
-    return _foreign_captures(parsed) + _bad_requires(parsed)
+    """W012 + E005 — both are cross-file by nature.
+
+    One graph serves both rules, so the two never disagree about what depends on
+    what.
+    """
+    graph = build(_nodes(parsed))
+    return _foreign_captures(parsed, graph) + _bad_requires(parsed, graph)
