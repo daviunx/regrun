@@ -14,6 +14,7 @@ Module       Rules
 ``fixtures``  W004, W005, W007, W011
 ``hosts``     W008
 ``variables`` W012, E005
+``schema``    E006
 ============ =====================================================
 """
 
@@ -25,6 +26,7 @@ from regrun.engine.lint_rules import (
     auth,
     fixtures,
     hosts,
+    schema,
     structure,
     timing,
     variables,
@@ -54,9 +56,12 @@ TEST_RULES: tuple[TestRule, ...] = (
     fixtures.check_test,
 )
 
+# Registry order is load-bearing: it fixes the order findings are emitted in.
+# A new rule is APPENDED, never inserted.
 FILE_RULES: tuple[FileRule, ...] = (
     hosts.check_sweep,
     structure.check_file,
+    schema.check_file,
 )
 
 DIRECTORY_RULES: tuple[DirectoryRule, ...] = (

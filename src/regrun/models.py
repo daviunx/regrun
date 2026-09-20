@@ -1,4 +1,18 @@
-"""Pydantic models for YAML regression test file schema."""
+"""Pydantic models for YAML regression test file schema.
+
+EVERY model here sets ``extra="forbid"``. Pydantic's default is
+``extra="ignore"``, which silently drops a key no model declares, and a dropped
+key in this schema is a dropped instruction: a top-level ``endpoint:`` (it
+belongs under ``meta:``) never reaches the runner, a misspelt group flag leaves
+the sweep unmarked, a misspelt poll key leaves the poll on its defaults, a
+per-command ``assert:`` is a condition that never runs. Each of those left the
+run green and ``regrun lint`` clean, the same silent false-pass family as a
+typo'd assertion key. A key the schema does not declare is therefore a load
+error, and a new YAML key must be declared as a field in the same change that
+starts reading it, including keys only external orchestration reads. Lint rule
+E006 (``engine/lint_rules/schema.py``) is the static twin, so the linter can
+never pass a file the engine refuses to load.
+"""
 
 from typing import Literal
 
@@ -16,7 +30,7 @@ class SqlConnection(BaseModel):
     otherwise it falls back to ``psql {fallback_dsn}``.
     """
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     docker_container: str
     docker_user: str
@@ -71,7 +85,7 @@ class TestMeta(BaseModel):
 class AuthConfig(BaseModel):
     """Authentication configuration for a named auth context."""
 
-    model_config = ConfigDict(strict=True)
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     type: Literal["bearer", "api_key"]
     token: str
@@ -101,7 +115,7 @@ class Assertion(BaseModel):
 class BashCommand(BaseModel):
     """A single command in a bash test."""
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     cmd: str
     capture: dict[str, str] | None = None
@@ -114,7 +128,7 @@ class EventuallyConfig(BaseModel):
     assertions pass or ``max_attempts`` is exhausted (see engine/retry.py).
     """
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     # ge=1 is load-bearing, not cosmetic. At 0 the retry loop body never runs,
     # run_with_retry returns (None, []), and the executor's
@@ -129,7 +143,7 @@ class EventuallyConfig(BaseModel):
 class WebSocketConfig(BaseModel):
     """Product-agnostic WebSocket event parsing configuration."""
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     event_type_field: str = "event_type"
     event_type_fallback: str = "type"
@@ -193,7 +207,7 @@ class Test(BaseModel):
 class Group(BaseModel):
     """A named group of tests."""
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     name: str
     id: int
@@ -218,7 +232,7 @@ class PreflightCheck(BaseModel):
     into looking healthy, nor feed run state. ``timeout`` defaults to 10s.
     """
 
-    model_config = ConfigDict(strict=False, populate_by_name=True)
+    model_config = ConfigDict(strict=False, populate_by_name=True, extra="forbid")
 
     name: str
 
@@ -285,7 +299,7 @@ class SweepStep(BaseModel):
     semantics are untouched and remain the tail-end backstop.
     """
 
-    model_config = ConfigDict(strict=False, populate_by_name=True)
+    model_config = ConfigDict(strict=False, populate_by_name=True, extra="forbid")
 
     name: str
 
@@ -344,7 +358,7 @@ class SweepStep(BaseModel):
 class TestFile(BaseModel):
     """Top-level model representing a parsed YAML test file."""
 
-    model_config = ConfigDict(strict=False)
+    model_config = ConfigDict(strict=False, extra="forbid")
 
     meta: TestMeta
     variables: dict[str, str] = Field(default_factory=dict)
