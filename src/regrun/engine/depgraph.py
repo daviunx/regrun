@@ -24,15 +24,17 @@ edge.
 
 Every result is deterministic and independent of input order: a graph built
 from a shuffled node list answers identically, so a report or a shard plan
-never moves for a reason nobody can see.
+never moves for a reason nobody can see. Two kinds of sorting live here and
+they are not the same thing: anything answering "which file comes first" goes
+through ``ordering``, while the plain stem sorts inside the traversals exist
+only to make walking a SET reproducible and carry no run-order meaning.
 """
 
 from dataclasses import dataclass, field
 
-# Layer rank for the canonical run order (layer rank, then filename). Defined
-# HERE, once: the runner, the linter and the shard planner must all consume the
-# same order, and a second copy is a silent desync waiting for a fifth layer.
-LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
+# The run order itself lives in ``ordering``, the one place it is defined. It is
+# re-exported here because the graph is where most callers meet it.
+from regrun.engine.ordering import LAYER_ORDER, run_order_key
 
 __all__ = [
     "LAYER_ORDER",
@@ -80,8 +82,9 @@ class Graph:
     """Resolved dependencies for a whole suite.
 
     ``deps[stem]`` is the DIRECT dependency set of ``stem``, declared plus
-    implicit. ``order`` is the stems in sorted order, which is what every
-    deterministic traversal here iterates.
+    implicit. ``order`` is the stems in CANONICAL RUN ORDER (``ordering``), which
+    is what every deterministic traversal here iterates, and ``setup_stems`` is
+    the setup layer in that same order.
     """
 
     nodes: dict[str, FileNode]
@@ -90,7 +93,11 @@ class Graph:
 
     @property
     def order(self) -> list[str]:
-        return sorted(self.nodes)
+        return sorted(self.nodes, key=self.key_of)
+
+    def key_of(self, stem: str) -> tuple[int, str]:
+        """Run-order key of one stem, from the engine's single ordering primitive."""
+        return run_order_key(stem, self.nodes[stem].layer)
 
 
 def build(nodes: list[FileNode]) -> Graph:
@@ -102,7 +109,12 @@ def build(nodes: list[FileNode]) -> Graph:
     them as findings against the files that declared them.
     """
     by_stem = {node.stem: node for node in nodes}
-    setup_stems = tuple(sorted(node.stem for node in nodes if node.is_setup))
+    setup_stems = tuple(
+        sorted(
+            (node.stem for node in nodes if node.is_setup),
+            key=lambda stem: run_order_key(stem, "setup"),
+        )
+    )
 
     deps: dict[str, set[str]] = {}
     for node in nodes:
@@ -151,6 +163,11 @@ def selection_closure(graph: Graph, stem: str) -> set[str]:
     stem also pulls every setup file SORTING BEFORE IT, plus those files' own
     declared closures.
 
+    "Before" is the engine's one run order (``ordering.run_order_key``), never a
+    comparison of its own: a selection that ordered files differently from the
+    runner would pull a producer the full suite runs afterwards, or drop one it
+    runs first, and only punctuated names would show it.
+
     A LATER setup file is never pulled: nothing it produces can have existed when
     the selected file ran in a full suite, so needing it would be a defect rather
     than a dependency. For a non-setup stem the answer is exactly ``closure``,
@@ -168,8 +185,9 @@ def selection_closure(graph: Graph, stem: str) -> set[str]:
     if not graph.nodes[stem].is_setup:
         return selected
 
+    boundary = graph.key_of(stem)
     for earlier in graph.setup_stems:
-        if earlier >= stem:
+        if graph.key_of(earlier) >= boundary:
             continue
         selected.add(earlier)
         selected |= closure(graph, earlier)

@@ -95,6 +95,7 @@ from regrun.engine.lint_rules import (
 from regrun.engine.lint_rules.auth import AUTH_CONSUMING_RUNNERS as _AUTH_CONSUMING_RUNNERS
 from regrun.engine.lint_rules.context import ERROR, WARN, LintFinding
 from regrun.engine.lint_rules.timing import eventually_ceiling
+from regrun.engine.ordering import within_layer_key
 
 __all__ = [
     "ERROR",
@@ -166,7 +167,7 @@ def lint_directory(
     allow_positional: tuple[str, ...] = (),
 ) -> list[LintFinding]:
     """Statically lint every ``*.yaml`` file in ``test_dir``. No network."""
-    yaml_files = sorted(test_dir.glob("*.yaml"))
+    yaml_files = sorted(test_dir.glob("*.yaml"), key=lambda path: within_layer_key(path.stem))
     if not yaml_files:
         return []
 

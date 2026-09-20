@@ -174,6 +174,78 @@ def test_a_setup_stem_with_skip_setup_is_a_clear_error(tmp_path: Path) -> None:
     assert "00g_seed" in result.output
 
 
+def _two_setup_suite(tmp_path: Path, declaring: str, reading: str) -> Path:
+    """Two setup files whose names differ only by a suffix, one reading the other's variable.
+
+    ``00_setup`` and ``00_setup-extra`` are the pair that tells a stem-based order
+    apart from a filename-based one, so this builder is how a selection is checked
+    against what a full run actually does.
+    """
+    test_dir = tmp_path / f"pair_{declaring.replace('-', '_')}"
+    test_dir.mkdir()
+
+    producer = _file_doc("setup", [_group(1, "Declare", ["D.1"])])
+    producer["variables"] = {"SEED_TOKEN": "token-value"}
+    _write_yaml(test_dir, f"{declaring}.yaml", producer)
+
+    consumer = _file_doc("setup", [_group(2, "Read", ["R.1"])])
+    consumer["groups"][0]["tests"][0]["commands"] = [{"cmd": "test -n '{{SEED_TOKEN}}'"}]
+    _write_yaml(test_dir, f"{reading}.yaml", consumer)
+    return test_dir
+
+
+def _run(test_dir: Path, tmp_path: Path, *args: str):
+    return CliRunner().invoke(
+        cli,
+        ["run", str(test_dir), *args],
+        env={
+            "REGRUN_RUNS_DIR": str(tmp_path / "runs"),
+            "REGRUN_LOCK_TARGET": "demotarget",
+        },
+    )
+
+
+def test_the_shorter_name_runs_first_and_its_variable_reaches_the_longer_one(
+    tmp_path: Path,
+) -> None:
+    """``00_setup`` declares, ``00_setup-extra`` reads: selecting the reader resolves it."""
+    test_dir = _two_setup_suite(tmp_path, declaring="00_setup", reading="00_setup-extra")
+    plan = _plan(test_dir, "--file", "00_setup-extra")
+    assert _files_in_plan(plan.output) == ["00_setup.yaml", "00_setup-extra.yaml"]
+
+    result = _run(test_dir, tmp_path, "--file", "00_setup-extra")
+    assert result.exit_code == 0, result.output
+
+
+def test_selecting_one_file_agrees_with_the_full_run_on_a_backwards_reference(
+    tmp_path: Path,
+) -> None:
+    """``00_setup-extra`` declares, ``00_setup`` reads: that is backwards in the run order.
+
+    The single-file verdict must be the FULL-SUITE verdict. A selection ordering
+    files differently from the runner would pass here while the suite is broken,
+    or fail here while the suite is fine, and only a punctuated name shows it.
+    """
+    test_dir = _two_setup_suite(tmp_path, declaring="00_setup-extra", reading="00_setup")
+    assert _files_in_plan(_plan(test_dir, "--file", "00_setup").output) == ["00_setup.yaml"]
+
+    whole_suite = _run(test_dir, tmp_path)
+    one_file = _run(test_dir, tmp_path, "--file", "00_setup")
+    assert whole_suite.exit_code != 0, whole_suite.output
+    assert one_file.exit_code != 0, one_file.output
+    assert "SEED_TOKEN" in whole_suite.output
+    assert "SEED_TOKEN" in one_file.output
+
+
+def test_a_setup_selection_keeps_the_setup_layer_in_every_shard(tmp_path: Path) -> None:
+    """``--file`` on a setup stem composes with ``--shard``: setup runs in each one."""
+    test_dir = _setup_layer_suite(tmp_path)
+    for spec in ("1/2", "2/2"):
+        result = _plan(test_dir, "--file", "00g_seed", "--shard", spec)
+        assert result.exit_code == 0, result.output
+        assert _files_in_plan(result.output) == ["00_setup.yaml", "00g_seed.yaml"], spec
+
+
 def test_a_setup_stem_runs_with_a_variable_from_the_first_setup_file(tmp_path: Path) -> None:
     """The defect this guarantee exists for: the run must resolve the suite variable."""
     test_dir = _setup_layer_suite(tmp_path)

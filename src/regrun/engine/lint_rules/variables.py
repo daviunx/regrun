@@ -17,9 +17,11 @@ is a defect in the declaration rather than a judgement call.
 
 from pathlib import Path
 
-# LAYER_ORDER comes from depgraph, the one place it is defined: E005's
+from regrun.engine.depgraph import FileNode, Graph, build, closure, detect_cycles
+
+# The run order comes from ``ordering``, the one place it is defined: E005's
 # order check must use the exact order the runner runs files in.
-from regrun.engine.depgraph import LAYER_ORDER, FileNode, Graph, build, closure, detect_cycles
+from regrun.engine.ordering import run_order_key
 from regrun.engine.lint_rules.context import (
     BUILTIN_VARS,
     ERROR,
@@ -144,10 +146,10 @@ def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
 
 
 def _order_index(parsed: Parsed) -> dict[str, int]:
-    """Canonical run position of each stem: layer rank then filename."""
+    """Canonical run position of each stem, from the engine's ordering primitive."""
     ordered = sorted(
         ((path, raw) for path, raw, _text in parsed),
-        key=lambda item: (LAYER_ORDER.get(_layer(item[1]), 99), item[0].name),
+        key=lambda item: run_order_key(item[0].stem, _layer(item[1])),
     )
     return {path.stem: index for index, (path, _raw) in enumerate(ordered)}
 

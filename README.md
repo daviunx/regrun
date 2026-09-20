@@ -164,7 +164,18 @@ artifacts:
 
 ## How It Works (Execution Model)
 
-**File ordering:** The setup layer always runs first. All other files run alphabetically by filename. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order.
+**File ordering:** One order governs the whole engine: **layer rank first** (`setup`, `api`, `mcp`, `chat`; an unrecognised layer runs last), **then the file's stem in byte order**. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order. The runner, the `--file` and `--rerun-failed` selectors, the shard planner and the linter's ordering rules all read that one definition, so a plan, a report and a lint finding can never disagree about which file comes first.
+
+The stem is the filename without `.yaml`, and excluding the extension is deliberate: it is a constant that carries no ordering intent, and comparing it against real characters is what makes punctuated names surprising. Given two files in one layer:
+
+| Order | Why |
+|---|---|
+| `00_setup` before `00_setup-extra` | A name that is a prefix of another runs first, whatever the longer one continues with. A shell's `ls` disagrees, because it compares `.yaml` against `-extra` |
+| `00_setup-extra` before `00a_x` | `_` precedes `a` |
+| `00.b` before all of them | `.` precedes `_` and every letter |
+| `00A_x` before `00a_x` | Byte order, never case-folded: a suite's order must not depend on a locale |
+
+Names built from digits, letters and underscores are unaffected by any of this, which is what the numeric-prefix convention is for.
 
 **Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
 
@@ -945,7 +956,7 @@ tests/regression/
   03_chat_surface.yaml   # WebSocket / streaming tests
 ```
 
-Numeric prefixes control alphabetical sort order. The setup layer is always processed first regardless of filename, but `00_` makes the intent explicit and keeps directory listings readable.
+Numeric prefixes control the within-layer sort order (see **File ordering** above: layer rank, then the stem in byte order). The setup layer is always processed first whatever the names are, but `00_` makes the intent explicit and keeps directory listings readable.
 
 ---
 

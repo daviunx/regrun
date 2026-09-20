@@ -11,8 +11,14 @@ from regrun.engine.lint_rules.context import (
     LintFinding,
     is_mcp_file,
 )
+from regrun.engine.ordering import within_layer_key
 
 __all__ = ["check_file", "check_directory"]
+
+
+def _is_cleanup(path: Path) -> bool:
+    """A cleanup file is any file whose NAME contains "cleanup"."""
+    return "cleanup" in path.name.lower()
 
 
 def check_file(ctx: FileContext) -> list[LintFinding]:
@@ -32,13 +38,16 @@ def check_directory(parsed: list[tuple[Path, dict, str]]) -> list[LintFinding]:
     findings: list[LintFinding] = []
 
     # E002 — cross-file: an mcp file sorting after a cleanup-named file. Cleanup
-    # revokes the shared api_key, so mcp files must sort before it.
-    cleanup_files = [p.name for p, _, _ in parsed if "cleanup" in p.name.lower()]
+    # revokes the shared api_key, so mcp files must sort before it. The cleanup
+    # set is matched on FILENAMES (any name containing "cleanup"), while "sorts
+    # after" is decided by the engine's ordering primitive, so this rule and the
+    # runner can never disagree about which of two files comes first.
+    cleanup_files = [(p.name, within_layer_key(p.stem)) for p, _, _ in parsed if _is_cleanup(p)]
     for path, raw, _ in parsed:
         if not is_mcp_file(raw):
             continue
-        for cname in cleanup_files:
-            if cname < path.name:
+        for cname, ckey in cleanup_files:
+            if ckey < within_layer_key(path.stem):
                 findings.append(
                     LintFinding(
                         file=path.name,
