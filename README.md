@@ -10,7 +10,7 @@ Deterministic YAML-driven regression test runner for APIs, MCP servers, and WebS
 
 ## What is regrun?
 
-regrun lets you define regression tests as YAML files and run them against live services — no test framework required. You describe what to call, what to assert, and what to capture; regrun handles execution, variable interpolation, and reporting. It supports four runners: REST APIs (httpx), MCP tools (fastmcp CLI), shell commands (bash), and WebSocket streams (websocket). Tests share a variable store across files, so a JWT captured in setup is available to every subsequent test without any wiring.
+regrun lets you define regression tests as YAML files and run them against live services, with no test framework required. You describe what to call, what to assert, and what to capture; regrun handles execution, variable interpolation, and reporting. It supports four runners: REST APIs (httpx), MCP tools (fastmcp CLI), shell commands (bash), and WebSocket streams (websocket). Tests share a variable store across files, so a JWT captured in setup is available to every subsequent test without any wiring.
 
 ---
 
@@ -34,7 +34,7 @@ pip install fastmcp
 
 Create two test files for a fictional `myapp` running at `http://localhost:8000`.
 
-**`tests/regression/00_setup.yaml`** — acquire a JWT:
+**`tests/regression/00_setup.yaml`** acquires a JWT:
 
 ```yaml
 meta:
@@ -70,7 +70,7 @@ groups:
           APP_JWT: "$.access_token"
 ```
 
-**`tests/regression/01_api.yaml`** — exercise the API with the captured token:
+**`tests/regression/01_api.yaml`** exercises the API with the captured token:
 
 ```yaml
 meta:
@@ -121,7 +121,7 @@ tests/regression/  •  2 tests
 
 ## Failure Diagnostics & Run Artifacts
 
-**One run tells you everything about a failure — by default.** No flag needed. When a test fails or errors, regrun renders a `Failures` section between the results table and the summary, so `Result: PASS|FAIL` stays the last line while a tail-clipped terminal still shows the diagnostics:
+**One run tells you everything about a failure, by default.** No flag needed. When a test fails or errors, regrun renders a `Failures` section between the results table and the summary, so `Result: PASS|FAIL` stays the last line while a tail-clipped terminal still shows the diagnostics:
 
 ```
 Failures (1)
@@ -147,9 +147,9 @@ Each failed test's diagnostics carries the **request echo** (method/URL/headers/
 
 **Redaction:** request headers are redacted at capture time by canonical sensitive-field patterns (`authorization`, `*token*`, `*key*`, `cookie`, …), and any resolved auth-token value is scrubbed wherever it appears (including a token echoed back in a response body). Response bodies are truncated to 2000 chars (see `REGRUN_DIAG_BODY_LIMIT`) with a `…[truncated, N total chars]` annotation.
 
-**Persistent artifacts:** *every* run — pass, fail, or `--fail-fast` abort — writes the full `report.txt` + `report.json` + `junit.xml` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with the pointer line above. An AI agent (or a human) reads the file instead of re-running a multi-minute suite to see a truncated error. Timestamped dirs are never auto-pruned (plain text, negligible size).
+**Persistent artifacts:** *every* run (pass, fail, or `--fail-fast` abort) writes the full `report.txt` + `report.json` + `junit.xml` to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{YYYYMMDD-HHMMSS}/`, and stdout ends with the pointer line above. An AI agent (or a human) reads the file instead of re-running a multi-minute suite to see a truncated error. Timestamped dirs are never auto-pruned (plain text, negligible size).
 
-**JUnit XML for GitLab Tests tab:** The `junit.xml` artifact follows the JUnit spec as consumed by GitLab — one `<testsuite>` per source YAML file, one `<testcase>` per test. Failed tests carry a `<failure>` element with the full diagnostics body (same redaction as report.txt), errored tests `<error>`, skipped tests `<skipped/>`. Bodies are capped at 16 KB. Wire it in your `.gitlab-ci.yml`:
+**JUnit XML for GitLab Tests tab:** The `junit.xml` artifact follows the JUnit spec as consumed by GitLab: one `<testsuite>` per source YAML file, one `<testcase>` per test. Failed tests carry a `<failure>` element with the full diagnostics body (same redaction as report.txt), errored tests `<error>`, skipped tests `<skipped/>`. Bodies are capped at 16 KB. Wire it in your `.gitlab-ci.yml`:
 
 ```yaml
 artifacts:
@@ -179,11 +179,11 @@ Names built from digits, letters and underscores are unaffected by any of this, 
 
 > **Upgrading from 0.9.x can reorder files within a layer.** 0.9.x ordered by the full filename, extension included. The order moves for any pair whose stem is a byte-for-byte prefix of another stem that continues with a character sorting below `.` (a hyphen is the common one), so `00_setup` and `00_setup-extra` swap. Run `regrun run <dir> --dry-run` and read the file list before upgrading a pinned CI suite. Lint rule **E002** compares by the same key, so its verdict can flip for such a pair: a suite holding cleanup file `10_cleanup.yaml` next to mcp file `10_cleanup-extra.yaml` was not flagged before and is flagged now, correctly, because that mcp file does run after the cleanup file. Renaming either file clears it.
 
-**Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
+**Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it: it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
 
 **Selecting a setup file (`--file`):** The setup layer is ordered and single-homed: the first setup file owns the suite's `variables:` and `meta.env_file`, and any setup file after it may read them. So selecting a setup-layer file also runs **every setup file sorting before it** (plus their own `requires` closures). A setup file sorting *after* the selection is never pulled: nothing it produces can have existed when the selected file ran in a full suite, so needing it would be a suite defect rather than a dependency. Selecting the first setup file therefore runs that file alone, and `--skip-setup` still removes the whole layer, which makes a `--file` pattern that only matched setup files an error, never a silent zero-file run.
 
-**Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run — in the failing file and every later file — while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts — the run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
+**Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run, in the failing file and every later file, while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts. The run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
 
 **Declared file dependencies:** A file lists the files it consumes captured values from in `meta.requires:` (stems, no `.yaml`). The setup layer is the bootstrap contract every file already depends on and is never listed. Declaring a dependency buys three things: the file selectors pull the producer in automatically, sharding keeps a file and its closure together, and a failed producer reports its consumers as BLOCKED. Lint rule W012 finds the couplings a suite has not declared yet.
 
@@ -191,7 +191,7 @@ A `requires:` entry that names no file in the suite directory, names the file it
 
 **BLOCKED:** When a file fails, every file that requires it (directly or transitively) is not run, and its tests are reported `BLOCKED` naming the file that blocked them. A failed `layer: setup` file blocks every later file, declared dependency or not: setup is the bootstrap contract nobody declares, so a seed file reporting green after a dead auth bootstrap would send the reader to the wrong place. Blocked tests are a sub-kind of skipped: one broken producer yields one actionable failure instead of a cascade of red that all has the same cause. The exit code is driven by real failures and errors, so a run whose only red is a blocked consumer still points at the producer.
 
-**Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file — for example `RUN_ID` defined in setup — is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
+**Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file (for example `RUN_ID` defined in setup) is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
 
 **Layer concept:** Tests are organised into four layers, processed in this order:
 
@@ -275,7 +275,7 @@ regrun run tests/regression/ --dry-run --shard 1/3
 
 ## `sql` Runner
 
-A first-class runner for Postgres statements. It absorbs the psql half of the fleet's hand-rolled bash steps and resolves the docker-exec-vs-direct-psql dispatch **once**, in Python — no more copy-pasting the `command -v docker && docker info` guard into every suite. **No new DB driver is added:** the runner shells out to `psql` exactly as the bash steps did.
+A first-class runner for Postgres statements. It absorbs the psql half of the fleet's hand-rolled bash steps and resolves the docker-exec-vs-direct-psql dispatch **once**, in Python: no more copy-pasting the `command -v docker && docker info` guard into every suite. **No new DB driver is added:** the runner shells out to `psql` exactly as the bash steps did.
 
 Declare a connection in `meta.sql_connection` and put SQL in a test's `sql:` field:
 
@@ -304,13 +304,13 @@ groups:
 
 Dispatch: the runner probes `shutil.which("docker")` + `docker info` (cached per run). When docker is available it runs `docker exec -i {container} psql -U {user} -d {db}`; otherwise `psql {fallback_dsn}`. Every invocation carries `-v ON_ERROR_STOP=1 -q -t -A` and receives the statement on stdin. Stdout is parsed JSON-or-string exactly like the bash runner, so `contains` / `json_path` on `to_jsonb(...)` output transfer 1:1.
 
-- **Connection values are Jinja-renderable strings** — keep the product-prefixed env convention (`{{ env.get('MYAPP_DB', ...) }}`); there are no new `REGRUN_SQL_*` vars.
+- **Connection values are Jinja-renderable strings**. Keep the product-prefixed env convention (`{{ env.get('MYAPP_DB', ...) }}`); there are no new `REGRUN_SQL_*` vars.
 - **SQL only.** App-command steps (`docker compose exec … python -m …` seeders/reindexers) and OpenSearch curl steps stay `runner: bash`.
 - **Adoption is pin-gated:** `runner: sql` **hard-fails to parse on a pre-0.8.0 binary** (Literal enforcement). A suite may adopt it only after its CI pin is ≥ 0.8.0.
 
 ## `preflight:` Dependency-Health Checks
 
-A top-level `preflight:` block lists read-only probes that run **once, before any group**, and abort the whole run in seconds naming the failed dependency — killing the degraded-backend grind regime (a slow/broken backend otherwise burns the full suite budget retrying).
+A top-level `preflight:` block lists read-only probes that run **once, before any group**, and abort the whole run in seconds naming the failed dependency. This kills the degraded-backend grind regime (a slow/broken backend otherwise burns the full suite budget retrying).
 
 ```yaml
 meta:
@@ -339,11 +339,11 @@ groups:
 ```
 
 - Checks carry a `Test`-shaped body on any runner, plus a `name` (used in the abort message) and a `timeout` (default `10.0`s).
-- **Constraints (validation-enforced):** a check may **not** use `eventually:` or `capture:` — a health probe must not retry a degraded backend into looking healthy, nor feed run state.
+- **Constraints (validation-enforced):** a check may **not** use `eventually:` or `capture:`. A health probe must not retry a degraded backend into looking healthy, nor feed run state.
 - Checks are collected across **all** loaded files in file order. The first failure aborts: the CLI prints `PREFLIGHT FAILED: <name>` + diagnostics and exits non-zero having executed **zero** groups.
 - `--skip-preflight` bypasses them (deliberate local override); `--dry-run` lists them.
 - On a passing run the report header prints `preflight: N checks passed`.
-- **Compat:** `preflight:` is **silently ignored by a pre-0.8.0 binary** (unknown key). A CI log missing the `preflight:` header line was run by an old pin — lint **W006** and the header count make this detectable while pins lag.
+- **Compat:** `preflight:` is **silently ignored by a pre-0.8.0 binary** (unknown key). A CI log missing the `preflight:` header line was run by an old pin. Lint **W006** and the header count make this detectable while pins lag.
 
 ## Per-Product Run Lock
 
@@ -353,13 +353,13 @@ Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/
 Another regression run for 'myapp' is in progress (lock: /…/.regrun/runs/myapp/.lock)
 ```
 
-- flock **self-releases on process death** (incl. SIGKILL) — no stale-lock protocol.
+- flock **self-releases on process death** (incl. SIGKILL), so there is no stale-lock protocol.
 - `--no-lock` bypasses the lock (allow a deliberate concurrent run).
 - **Network filesystems:** flock semantics are unreliable over NFS/CIFS. `REGRUN_RUNS_DIR` is expected to be local (`~/.regrun` or the CI workspace).
 
 ### `regrun lint`
 
-Static analysis of a suite — no network, no execution. Encodes the regression-testing discipline (assertion strength, budget floors, sweep hygiene, the `auth: none` trap) as mechanical checks so violations surface at commit time instead of months later as flakes. Exit code is `1` if any **error** rule fires (`0` otherwise); `--strict` elevates warnings to errors.
+Static analysis of a suite: no network, no execution. Encodes the regression-testing discipline (assertion strength, budget floors, sweep hygiene, the `auth: none` trap) as mechanical checks so violations surface at commit time instead of months later as flakes. Exit code is `1` if any **error** rule fires (`0` otherwise); `--strict` elevates warnings to errors.
 
 ```
 regrun lint TARGET [OPTIONS]
@@ -371,7 +371,7 @@ regrun lint TARGET [OPTIONS]
 |------|------|---------|-------------|
 | `--strict` | flag | false | Treat warnings as errors |
 | `--budget-floor` | float | `75.0` | Minimum `eventually:` ceiling (seconds) before W003 fires |
-| `--allow-positional` | glob (repeatable) | — | File glob(s) where positional array asserts (W002) are permitted |
+| `--allow-positional` | glob (repeatable) | (none) | File glob(s) where positional array asserts (W002) are permitted |
 
 | Rule | Sev | Meaning |
 |------|-----|---------|
@@ -381,11 +381,11 @@ regrun lint TARGET [OPTIONS]
 | E004 | error | A test on an auth-consuming runner (`httpx`/`fastmcp`/`websocket`) references an auth profile absent from that file's own `auth:` block, via `auth:` or `meta.default_auth` |
 | E005 | error | A `meta.requires:` entry no run can satisfy: an unknown stem, the file itself, a cycle, or a file that runs after its dependent |
 | W001 | warn | MCP tool test asserts `is_error` with no `json_path` on the response |
-| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`) — rank-0 fragile. Suppress per-test with an inline `# lint: allow-positional` comment, or per-file with `--allow-positional` |
+| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`): rank-0 fragile. Suppress per-test with an inline `# lint: allow-positional` comment, or per-file with `--allow-positional` |
 | W003 | warn | `eventually:` worst-case ceiling below the budget floor (default 75s) |
 | W004 | warn | POST/create-shaped test whose body/args carry no `{{RUN_ID}}` and no run-scoped declared variable. An inline `{{timestamp}}` does not satisfy it: the builtin is recomputed per render, so the value is uncapturable and unsweepable. Negative tests, non-create verbs and bodyless POSTs are skipped; suppress an irreducible create with `# lint: allow-nocreate` |
 | W005 | warn | Cleanup-flagged group references a variable captured in another group (capture-dependent sweep) |
-| W006 | warn | The suite directory declares no `preflight:` block in any file — missing dependency-health probes (adoption nudge) |
+| W006 | warn | The suite directory declares no `preflight:` block in any file: missing dependency-health probes (adoption nudge) |
 | W007 | warn | The suite has neither a `sweep:` block nor a `cleanup: true` group sorting before its first create-shaped test (sweep-first is unenforced) |
 | W008 | warn | A bash `cmd` carries a hardcoded `http(s)://` host or a `psql -d <name>` database literal not wrapped in `{{ env.get(...) }}` or `${VAR:-default}` |
 | W009 | warn | A `json_path` condition whose only operator is `exists: true`, which a JSONPath match on `null` satisfies. Suppress per-test with `# lint: allow-exists` |
@@ -409,11 +409,11 @@ regrun lint tests/regression/ --strict
 
 ```yaml
 meta:
-  product: myapp              # Used for reporting only — does not need to match any registered name
+  product: myapp              # Used for reporting only; does not need to match any registered name
   layer: api                  # setup | api | mcp | chat
   runner: httpx               # httpx | fastmcp | bash | websocket
   endpoint: "http://localhost:8000"      # Base URL for httpx runner
-  mcp_endpoint: "http://localhost:9000"  # MCP base URL — falls back to endpoint if omitted
+  mcp_endpoint: "http://localhost:9000"  # MCP base URL; falls back to endpoint if omitted
   default_auth: prod          # Auth key applied to all tests without explicit auth:
   env_file: ".env.test"       # Path to .env file, relative to the test file's directory
   strict_vars: true           # Default true: an unresolved {{VAR}} fails the test
@@ -443,7 +443,7 @@ Built-in variables:
 
 | Variable | Description |
 |----------|-------------|
-| `{{timestamp}}` | Unix timestamp + 4 hex chars — unique per run, use as resource name suffix |
+| `{{timestamp}}` | Unix timestamp + 4 hex chars, unique per run, use as resource name suffix |
 | `{{date}}` | Current date as `YYYY-MM-DD` |
 | `{{uuid}}` | UUID4 |
 | `{{env.VAR_NAME}}` | Reads `VAR_NAME` from the process environment |
@@ -459,7 +459,7 @@ auth:
   prod:
     type: bearer                # bearer | api_key
     token: "{{APP_JWT}}"
-    org_header: "myapp"         # Sets X-Org-Slug header — omit if not needed
+    org_header: "myapp"         # Sets X-Org-Slug header; omit if not needed
   service_key:
     type: api_key
     token: "{{SERVICE_API_KEY}}"
@@ -487,7 +487,7 @@ groups:
       - ...
 ```
 
-`cleanup: true` marks a group as a teardown/sweep that must run even on filtered or aborted runs (see *Cleanup dependency* above). Reserve it for capture-independent, pattern-based sweeps only — `regrun lint` flags (W005) a cleanup group that depends on variables captured elsewhere.
+`cleanup: true` marks a group as a teardown/sweep that must run even on filtered or aborted runs (see *Cleanup dependency* above). Reserve it for capture-independent, pattern-based sweeps only. `regrun lint` flags (W005) a cleanup group that depends on variables captured elsewhere.
 
 ### Test fields by runner
 
@@ -585,7 +585,7 @@ The runner connects, sends `send` as a JSON frame, collects events until `wait_f
 | `duration_ms` | `float` | Wall time from connect to termination event |
 | `error` | `str\|null` | Error message if an `error` event was received or timeout occurred |
 
-**`ws_config` options** (all have defaults — omit unless overriding):
+**`ws_config` options** (all have defaults; omit unless overriding):
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -598,7 +598,7 @@ The runner connects, sends `send` as a JSON frame, collects events until `wait_f
 | `error_event` | `error` | Event type that signals an error |
 | `error_field` | `data.content` | Dot-path to the error message within an error event |
 
-**Per-test runner override** — used in setup files that mix bash and httpx:
+**Per-test runner override**, used in setup files that mix bash and httpx:
 
 ```yaml
 # In a file with meta.runner: bash, a single test can use httpx instead:
@@ -617,7 +617,7 @@ The runner connects, sends `send` as a JSON frame, collects events until `wait_f
     APP_JWT: "$.access_token"
 ```
 
-Pure `api` or `mcp` files should not use per-test `runner:` overrides — the file's `meta.runner` applies uniformly.
+Pure `api` or `mcp` files should not use per-test `runner:` overrides; the file's `meta.runner` applies uniformly.
 
 ---
 
@@ -649,7 +649,7 @@ Each entry under `json_path:` maps a JSONPath expression to one operator:
 | `starts_with` | `"$.key": { starts_with: "ntk_" }` | Prefix check |
 | `matches` | `"$.slug": { matches: "^[a-z0-9-]+$" }` | Regex search |
 | `not_empty` | `"$.items": { not_empty: true }` | Value is non-empty string, list, or dict |
-| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion — passes when no value matched by the path equals the expected value (all matches, string-coerced); empty/missing match set passes |
+| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when no value matched by the path equals the expected value (all matches, string-coerced); empty/missing match set passes |
 
 Note: numeric operators (`gt`, `gte`, `lt`, `lte`) are the correct names. `greater_than`, `less_than`, `>=`, and `<=` are not valid.
 
@@ -659,11 +659,11 @@ Assertions and captures run against the **normalized** tool response body, not t
 
 | Raw shape | Normalized to | Assert against |
 |-----------|---------------|-----------------|
-| `{success, data: {...}}` (dict `data`) | `data` hoisted to top level; siblings (`hints`, `success`, `error_code`, ...) dropped | `$.<field>` — never `$.data.*` |
+| `{success, data: {...}}` (dict `data`) | `data` hoisted to top level; siblings (`hints`, `success`, `error_code`, ...) dropped | `$.<field>`, never `$.data.*` |
 | Any other dict | Unchanged (stays flat) | `$.<field>` as returned |
 | `is_error: true` with a plain-string body | Wrapped as `{is_error: true, _raw_text: "<text>"}` | `$._raw_text` with `contains` |
 
-Captures follow the same rule — a `capture:` path written against the pre-normalize shape (e.g. `$.data.id` when `data` gets hoisted) silently captures nothing instead of erroring.
+Captures follow the same rule: a `capture:` path written against the pre-normalize shape (e.g. `$.data.id` when `data` gets hoisted) silently captures nothing instead of erroring.
 
 Source: `src/regrun/runners/mcp_response.py::_detect_and_normalize` (envelope hoist), `fastmcp_runner.py::_embed_is_error` (string-body wrap).
 
@@ -678,7 +678,7 @@ capture:
   RAW_OUTPUT: stdout             # Full stdout (bash runner only)
 ```
 
-Captured variables are stored in the shared `VariableStore` and are available to all subsequent tests in the run — including tests in later YAML files. This is how a JWT captured in `00_setup.yaml` is accessible in `01_api_surface.yaml` without any re-declaration.
+Captured variables are stored in the shared `VariableStore` and are available to all subsequent tests in the run, including tests in later YAML files. This is how a JWT captured in `00_setup.yaml` is accessible in `01_api_surface.yaml` without any re-declaration.
 
 **Collision avoidance:** suffix resource names with `{{RUN_ID}}` to prevent conflicts across runs:
 
@@ -698,7 +698,7 @@ body:
 | No auth | `auth: none` | Login, register, org creation endpoints |
 | Suppress org header | `org_header: false` | Bare-domain endpoints where `X-Org-Slug` causes 400 errors |
 
-`auth: none` is a string literal, not YAML null. Always write `auth: none` explicitly — writing `auth:` with no value parses as `null` and fails.
+`auth: none` is a string literal, not YAML null. Always write `auth: none` explicitly. Writing `auth:` with no value parses as `null` and fails.
 
 **Multi-file auth flow:** setup acquires credentials, downstream files consume them.
 
@@ -707,7 +707,7 @@ body:
 meta:
   runner: httpx
   endpoint: "http://localhost:8000"
-# No default_auth — login endpoint needs no auth
+# No default_auth: login endpoint needs no auth
 
 groups:
   - id: 1
@@ -894,8 +894,8 @@ regrun run tests/regression/
 | `REGRUN_MCP_TIMEOUT` | `60` | Per-test MCP call timeout (seconds) |
 | `REGRUN_WS_TIMEOUT` | `30` | Per-test WebSocket timeout (seconds) |
 | `REGRUN_VERBOSE` | `false` | Log full request/response bodies |
-| `REGRUN_API_ENDPOINT` | — | Override `meta.endpoint` globally (for CI) |
-| `REGRUN_MCP_ENDPOINT` | — | Override `meta.mcp_endpoint` globally (for CI) |
+| `REGRUN_API_ENDPOINT` | (none) | Override `meta.endpoint` globally (for CI) |
+| `REGRUN_MCP_ENDPOINT` | (none) | Override `meta.mcp_endpoint` globally (for CI) |
 | `REGRUN_RUNS_DIR` | `~/.regrun/runs` | Base dir for persisted `report.txt` + `report.json` + `junit.xml` artifacts |
 | `REGRUN_DIAG_BODY_LIMIT` | `2000` | Max response-body chars kept in failure diagnostics |
 
