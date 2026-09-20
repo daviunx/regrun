@@ -54,6 +54,23 @@ def write_run_artifacts(
     return run_dir
 
 
+def latest_report(product: str, target: str) -> Path | None:
+    """The newest ``report.json`` for this product AND target, or None if there is none.
+
+    Scoped to the target on purpose: two isolates of one product must never read
+    each other's failures. Run directories are timestamped ``YYYYMMDD-HHMMSS``,
+    which sorts chronologically as a string, so the last name is the latest run.
+    """
+    target_dir = _runs_base_dir() / product / target
+    if not target_dir.is_dir():
+        return None
+    for run_dir in sorted((d for d in target_dir.iterdir() if d.is_dir()), reverse=True):
+        report = run_dir / REPORT_JSON
+        if report.is_file():
+            return report
+    return None
+
+
 def pointer_line(run_dir: Path) -> str:
     """The stdout tail line an agent parses to locate the full report."""
     return f"Full report: {run_dir / REPORT_TXT} (json: {REPORT_JSON}, junit: {REPORT_JUNIT})"

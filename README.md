@@ -170,6 +170,12 @@ artifacts:
 
 **Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run — in the failing file and every later file — while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts — the run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
 
+**Declared file dependencies:** A file lists the files it consumes captured values from in `meta.requires:` (stems, no `.yaml`). The setup layer is the bootstrap contract every file already depends on and is never listed. Declaring a dependency buys three things: the file selectors pull the producer in automatically, sharding keeps a file and its closure together, and a failed producer reports its consumers as BLOCKED. Lint rule W012 finds the couplings a suite has not declared yet.
+
+A `requires:` entry that names no file in the suite directory, names the file itself, or closes a cycle aborts the run before anything executes: there is no order that satisfies it, and dropping it silently would leave the run green with blocked-skip quietly disabled. A producer left out by your own narrowing (`--file`, `--layer`, `--shard`) is the one tolerated case, because a filtered run cannot judge a producer it never loaded.
+
+**BLOCKED:** When a file fails, every file that requires it (directly or transitively) is not run, and its tests are reported `BLOCKED` naming the file that blocked them. A failed `layer: setup` file blocks every later file, declared dependency or not: setup is the bootstrap contract nobody declares, so a seed file reporting green after a dead auth bootstrap would send the reader to the wrong place. Blocked tests are a sub-kind of skipped: one broken producer yields one actionable failure instead of a cascade of red that all has the same cause. The exit code is driven by real failures and errors, so a run whose only red is a blocked consumer still points at the producer.
+
 **Variable persistence:** File-level variables are merged once per file at parse time. A variable already set by an earlier file — for example `RUN_ID` defined in setup — is never overwritten by a later file's `variables` block. This ensures identifiers stay consistent across the entire run.
 
 **Layer concept:** Tests are organised into four layers, processed in this order:
@@ -203,7 +209,17 @@ regrun run TEST_DIR [OPTIONS]
 | `--skip-setup` | flag | false | Skip setup layer |
 | `--skip-cleanup` | flag | false | Skip cleanup-flagged groups (use when iterating; leaks must be swept later) |
 | `--skip-preflight` | flag | false | Skip `preflight:` dependency-health checks (deliberate local override) |
+| `--skip-sweep` | flag | false | Skip the declared `sweep:` block (use when iterating; leaks must be swept later) |
 | `--no-lock` | flag | false | Bypass the per-product run lock (allow a concurrent run for this product) |
+| `--no-strict-vars` | flag | false | Render an unresolved `{{VAR}}` as a literal and warn, instead of failing the test |
+| `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match |
+| `--rerun-failed` | flag | false | Run only the files that failed, errored or were blocked in the latest report for this product and target |
+| `--shard` | `k/n` | none | Run shard `k` of `n`. **Each shard requires its own database and index prefix** |
+| `--budget-seconds` | float | none | Fail the run when its wall time exceeds this many seconds |
+
+**Time budgets** are off unless declared. A file declares its own ceiling with `meta.budget_seconds`; `--budget-seconds` covers the whole run. An overrun reds the run and the report names the file and the overrun, but it never reclassifies a test: the test passed, the budget did not.
+
+**Sharding requires disjoint environments.** Each shard needs its own database and its own search-index prefix. Two shards against one stack overwrite each other's fixtures and both verdicts become meaningless. regrun cannot verify the precondition, so it is the caller's to honour. Shards are built from the dependency graph: a file and its `requires` closure always land in the same shard, the setup layer runs in every shard, and a `serial: true` file gets the last shard to itself. Balance comes from greedy longest-processing-time packing, by test count when no timings are supplied. Plans are deterministic, so `--dry-run --shard k/n` can be diffed before a matrix is wired.
 
 Examples:
 
@@ -222,6 +238,21 @@ regrun run tests/regression/ --dry-run
 
 # Iterate on group 5 without running the sweep groups
 regrun run tests/regression/ --group 5 --skip-cleanup
+
+# One file, with setup and everything it requires
+regrun run tests/regression/ --file 11_search_e2e
+
+# Every file of one family (glob), repeatable
+regrun run tests/regression/ --file "02_mcp_*" --file 05_flows
+
+# After a red run: re-run only what broke
+regrun run tests/regression/ --rerun-failed
+
+# Shard 2 of 3, against that shard's own stack
+regrun run tests/regression/ --shard 2/3
+
+# Diff the planned subsets before wiring a CI matrix
+regrun run tests/regression/ --dry-run --shard 1/3
 ```
 
 ## `sql` Runner
@@ -329,12 +360,20 @@ regrun lint TARGET [OPTIONS]
 | E001 | error | Duplicate group id within a file |
 | E002 | error | mcp-layer file (`runner: fastmcp` / `default_auth: mcp`) sorts after a `*cleanup*` file (the shared api_key is revoked by cleanup) |
 | E003 | error | A test has `auth:` with a null value (the `auth: none` string-literal trap) |
+| E004 | error | A test on an auth-consuming runner (`httpx`/`fastmcp`/`websocket`) references an auth profile absent from that file's own `auth:` block, via `auth:` or `meta.default_auth` |
+| E005 | error | A `meta.requires:` entry no run can satisfy: an unknown stem, the file itself, a cycle, or a file that runs after its dependent |
 | W001 | warn | MCP tool test asserts `is_error` with no `json_path` on the response |
 | W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`) — rank-0 fragile. Suppress per-test with an inline `# lint: allow-positional` comment, or per-file with `--allow-positional` |
 | W003 | warn | `eventually:` worst-case ceiling below the budget floor (default 75s) |
-| W004 | warn | POST/create-shaped test whose body/args carry no `{{RUN_ID}}`/`{{timestamp}}` (4xx-asserting negative tests are skipped) |
+| W004 | warn | POST/create-shaped test whose body/args carry no `{{RUN_ID}}` and no run-scoped declared variable. An inline `{{timestamp}}` does not satisfy it: the builtin is recomputed per render, so the value is uncapturable and unsweepable. Negative tests, non-create verbs and bodyless POSTs are skipped; suppress an irreducible create with `# lint: allow-nocreate` |
 | W005 | warn | Cleanup-flagged group references a variable captured in another group (capture-dependent sweep) |
 | W006 | warn | The suite directory declares no `preflight:` block in any file — missing dependency-health probes (adoption nudge) |
+| W007 | warn | The suite has neither a `sweep:` block nor a `cleanup: true` group sorting before its first create-shaped test (sweep-first is unenforced) |
+| W008 | warn | A bash `cmd` carries a hardcoded `http(s)://` host or a `psql -d <name>` database literal not wrapped in `{{ env.get(...) }}` or `${VAR:-default}` |
+| W009 | warn | A `json_path` condition whose only operator is `exists: true`, which a JSONPath match on `null` satisfies. Suppress per-test with `# lint: allow-exists` |
+| W010 | warn | A `$.data.*` path in an mcp-layer file, where asserts and captures run on the post-normalize body |
+| W011 | warn | Fixture-name prefixes created by create-shaped tests that appear in no sweep step or `cleanup: true` group (unswept fixture families) |
+| W012 | warn | A file uses a variable another suite file captures without declaring `meta.requires:` for it. Cleared by declaring it, by producing the value locally, or by the producer being a setup file |
 
 ```bash
 # Lint before committing suite changes
@@ -359,9 +398,17 @@ meta:
   mcp_endpoint: "http://localhost:9000"  # MCP base URL — falls back to endpoint if omitted
   default_auth: prod          # Auth key applied to all tests without explicit auth:
   env_file: ".env.test"       # Path to .env file, relative to the test file's directory
+  strict_vars: true           # Default true: an unresolved {{VAR}} fails the test
+  requires: ["01_provider"]   # Files (stems) this one consumes captured values from
+  serial: false               # True: asserts process-global state, never shares a shard
+  budget_seconds: 60          # Optional wall-clock ceiling for this file
+  health_path: "/health"      # Read by external orchestration only; the engine ignores it
+  mcp_health_path: "/mcp/health"
 ```
 
 The `product` field appears in report output. It does not need to match any external registry.
+
+**Unknown `meta` keys are rejected at load.** A typo such as `require:` would otherwise be accepted and silently ignored, leaving the file with no declared dependency and nothing anywhere saying so.
 
 ### `variables` block
 
