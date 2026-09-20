@@ -8,6 +8,8 @@ Guarantees under test:
 
   * a single stem pulls its ``requires`` closure plus the setup layer, in
     canonical order, and nothing else.
+  * a stem in the SETUP layer pulls the setup files sorting before it, so a file
+    that reads a variable declared in the first setup file can run alone.
   * glob form and a repeated flag both work.
   * an unknown stem is a clear error with a non-zero exit, never a silent
     zero-file run.
@@ -110,9 +112,83 @@ def test_an_independent_stem_pulls_only_setup(tmp_path: Path) -> None:
     assert _files_in_plan(result.output) == ["00_setup.yaml", "03_independent.yaml"]
 
 
-def test_a_setup_stem_selects_only_the_setup_layer(tmp_path: Path) -> None:
+def test_a_setup_stem_pulls_no_non_setup_file(tmp_path: Path) -> None:
     result = _plan(_suite(tmp_path), "--file", "00_setup")
     assert _files_in_plan(result.output) == ["00_setup.yaml"]
+
+
+# ------------------------------------------------------------------------ setup layer
+
+
+def _setup_layer_suite(tmp_path: Path) -> Path:
+    """Three ordered setup files (the first owns the suite's variables) plus one api file.
+
+    Mirrors the real shape: ``variables:`` is single-homed in the first setup
+    file and a later setup file reads it, so selecting the later file alone can
+    only work if the earlier one comes with it.
+    """
+    test_dir = tmp_path / "setup_suite"
+    test_dir.mkdir()
+    first = _file_doc("setup", [_group(1, "Bootstrap", ["S.1"])])
+    first["variables"] = {"SEED_TOKEN": "token-value"}
+    _write_yaml(test_dir, "00_setup.yaml", first)
+
+    seed = _file_doc("setup", [_group(2, "Seed", ["S.2"])])
+    seed["groups"][0]["tests"][0]["commands"] = [{"cmd": "test -n '{{SEED_TOKEN}}'"}]
+    _write_yaml(test_dir, "00g_seed.yaml", seed)
+
+    _write_yaml(test_dir, "00z_last.yaml", _file_doc("setup", [_group(3, "Last", ["S.3"])]))
+    _write_yaml(test_dir, "01_api.yaml", _file_doc("api", [_group(5, "Api", ["A.1"])]))
+    return test_dir
+
+
+def test_a_setup_stem_pulls_the_earlier_setup_files(tmp_path: Path) -> None:
+    result = _plan(_setup_layer_suite(tmp_path), "--file", "00g_seed")
+    assert result.exit_code == 0, result.output
+    assert _files_in_plan(result.output) == ["00_setup.yaml", "00g_seed.yaml"]
+
+
+def test_a_setup_stem_excludes_the_later_setup_files(tmp_path: Path) -> None:
+    result = _plan(_setup_layer_suite(tmp_path), "--file", "00g_seed")
+    plan = _files_in_plan(result.output)
+    assert plan, result.output
+    assert "00z_last.yaml" not in plan
+    assert "01_api.yaml" not in plan
+
+
+def test_the_first_setup_stem_still_selects_only_itself(tmp_path: Path) -> None:
+    result = _plan(_setup_layer_suite(tmp_path), "--file", "00_setup")
+    assert _files_in_plan(result.output) == ["00_setup.yaml"]
+
+
+def test_a_glob_matching_several_setup_files_pulls_each_prefix(tmp_path: Path) -> None:
+    result = _plan(_setup_layer_suite(tmp_path), "--file", "00[gz]_*")
+    assert result.exit_code == 0, result.output
+    assert _files_in_plan(result.output) == ["00_setup.yaml", "00g_seed.yaml", "00z_last.yaml"]
+
+
+def test_a_setup_stem_with_skip_setup_is_a_clear_error(tmp_path: Path) -> None:
+    """``--skip-setup`` removes the whole layer, so the pattern can match nothing."""
+    result = _plan(_setup_layer_suite(tmp_path), "--file", "00g_seed", "--skip-setup")
+    assert result.exit_code != 0
+    assert "00g_seed" in result.output
+
+
+def test_a_setup_stem_runs_with_a_variable_from_the_first_setup_file(tmp_path: Path) -> None:
+    """The defect this guarantee exists for: the run must resolve the suite variable."""
+    test_dir = _setup_layer_suite(tmp_path)
+    result = CliRunner().invoke(
+        cli,
+        ["run", str(test_dir), "--file", "00g_seed"],
+        env={
+            "REGRUN_RUNS_DIR": str(tmp_path / "runs"),
+            "REGRUN_LOCK_TARGET": "demotarget",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert "S.2" in result.output
+    assert "SEED_TOKEN" not in result.output
+    assert "S.3" not in result.output
 
 
 # ------------------------------------------------------------------------ glob/repeat

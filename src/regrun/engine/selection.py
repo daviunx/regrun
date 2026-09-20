@@ -20,7 +20,13 @@ import yaml
 
 from regrun.config import settings
 from regrun.engine import artifacts, rerun, shardplan
-from regrun.engine.depgraph import LAYER_ORDER, FileNode, build, closure, detect_cycles
+from regrun.engine.depgraph import (
+    LAYER_ORDER,
+    FileNode,
+    build,
+    detect_cycles,
+    selection_closure,
+)
 from regrun.engine.run_lock import derive_lock_target
 from regrun.models import Group, TestFile
 
@@ -336,11 +342,16 @@ def file_nodes(paths: list[Path], test_files: list[TestFile]) -> list[FileNode]:
 
 
 def _with_closure(nodes: list[FileNode], stems: set[str]) -> set[str]:
-    """``stems`` plus everything they transitively depend on (setup included)."""
+    """``stems`` plus everything that has to run for them (setup included).
+
+    A setup stem also pulls the setup files sorting before it, because the setup
+    layer is ordered and the first file owns the suite's variables. See
+    ``depgraph.selection_closure``.
+    """
     graph = build(nodes)
     selected = set(stems)
     for stem in stems:
-        selected |= closure(graph, stem)
+        selected |= selection_closure(graph, stem)
     return selected
 
 

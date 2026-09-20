@@ -168,6 +168,8 @@ artifacts:
 
 **Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
 
+**Selecting a setup file (`--file`):** The setup layer is ordered and single-homed: the first setup file owns the suite's `variables:` and `meta.env_file`, and any setup file after it may read them. So selecting a setup-layer file also runs **every setup file sorting before it** (plus their own `requires` closures). A setup file sorting *after* the selection is never pulled: nothing it produces can have existed when the selected file ran in a full suite, so needing it would be a suite defect rather than a dependency. Selecting the first setup file therefore runs that file alone, and `--skip-setup` still removes the whole layer, which makes a `--file` pattern that only matched setup files an error, never a silent zero-file run.
+
 **Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run — in the failing file and every later file — while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts — the run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
 
 **Declared file dependencies:** A file lists the files it consumes captured values from in `meta.requires:` (stems, no `.yaml`). The setup layer is the bootstrap contract every file already depends on and is never listed. Declaring a dependency buys three things: the file selectors pull the producer in automatically, sharding keeps a file and its closure together, and a failed producer reports its consumers as BLOCKED. Lint rule W012 finds the couplings a suite has not declared yet.
@@ -212,7 +214,7 @@ regrun run TEST_DIR [OPTIONS]
 | `--skip-sweep` | flag | false | Skip the declared `sweep:` block (use when iterating; leaks must be swept later) |
 | `--no-lock` | flag | false | Bypass the per-product run lock (allow a concurrent run for this product) |
 | `--no-strict-vars` | flag | false | Render an unresolved `{{VAR}}` as a literal and warn, instead of failing the test |
-| `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match |
+| `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match (a setup-layer match pulls the setup files sorting before it) |
 | `--rerun-failed` | flag | false | Run only the files that failed, errored or were blocked in the latest report for this product and target |
 | `--shard` | `k/n` | none | Run shard `k` of `n`. **Each shard requires its own database and index prefix** |
 | `--budget-seconds` | float | none | Fail the run when its wall time exceeds this many seconds |
@@ -244,6 +246,9 @@ regrun run tests/regression/ --file 11_search_e2e
 
 # Every file of one family (glob), repeatable
 regrun run tests/regression/ --file "02_mcp_*" --file 05_flows
+
+# One setup file, with the setup files that run before it
+regrun run tests/regression/ --file 00g_seed_directory
 
 # After a red run: re-run only what broke
 regrun run tests/regression/ --rerun-failed

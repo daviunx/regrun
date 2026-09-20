@@ -16,6 +16,12 @@ Two kinds of dependency exist:
   the executor to every file that follows a failed setup file, and the only
   mechanism covering one setup file blocking the NEXT one.
 
+Selecting a file to RUN is a wider question than blocking, and ``requires`` plus
+the implicit rule above does not answer it for a setup file: the setup layer is
+ordered and single-homed, so a later setup file reads what an earlier one
+declared. ``selection_closure`` adds that ordered prefix, without making it an
+edge.
+
 Every result is deterministic and independent of input order: a graph built
 from a shuffled node list answers identically, so a report or a shard plan
 never moves for a reason nobody can see.
@@ -37,6 +43,7 @@ __all__ = [
     "build",
     "closure",
     "detect_cycles",
+    "selection_closure",
     "validate_order",
 ]
 
@@ -131,6 +138,43 @@ def closure(graph: Graph, stem: str) -> set[str]:
         pending.extend(sorted(graph.deps.get(current, set())))
     seen.discard(stem)
     return seen
+
+
+def selection_closure(graph: Graph, stem: str) -> set[str]:
+    """Everything that has to RUN for ``stem`` to be runnable on its own.
+
+    ``closure`` answers the BLOCKING question (whose failure invalidates this
+    file), and a setup file has no producer to be invalidated by. Selecting a
+    file to run asks a wider question, because the setup layer is ORDERED and
+    single-homed: the first setup file owns the suite's ``variables:`` and
+    ``meta.env_file``, and every setup file after it may read them. So a setup
+    stem also pulls every setup file SORTING BEFORE IT, plus those files' own
+    declared closures.
+
+    A LATER setup file is never pulled: nothing it produces can have existed when
+    the selected file ran in a full suite, so needing it would be a defect rather
+    than a dependency. For a non-setup stem the answer is exactly ``closure``,
+    which already carries the whole setup layer.
+
+    The prefix is deliberately NOT a graph edge. Blocking is unchanged (a failed
+    setup file already blocks every later file through the setup gate), shard
+    planning is unchanged (setup runs in every shard), and the graph keeps its
+    guarantee that setup ordering can never surface as a cycle.
+    """
+    if stem not in graph.nodes:
+        raise UnknownStemError(f"unknown file '{stem}'")
+
+    selected = closure(graph, stem)
+    if not graph.nodes[stem].is_setup:
+        return selected
+
+    for earlier in graph.setup_stems:
+        if earlier >= stem:
+            continue
+        selected.add(earlier)
+        selected |= closure(graph, earlier)
+    selected.discard(stem)
+    return selected
 
 
 def _normalize_cycle(path: list[str]) -> tuple[str, ...]:
