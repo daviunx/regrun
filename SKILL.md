@@ -335,6 +335,8 @@ regrun run tests/regression/ --skip-preflight
 regrun run tests/regression/ --no-lock
 ```
 
+**Narrowing does not narrow validation.** The narrowing flags (`--file`, `--rerun-failed`, `--shard`) are applied after every discovered file has been parsed and validated, because selection reads what the files declare: the `requires` closure, the shard weights, the run order. One schema-invalid file therefore aborts every run of that directory, including a `--file` run that did not select it and including `--dry-run`. That is intended: a suite holding a file the engine cannot load is not a suite a narrowed green can be trusted from. Recovery is `regrun lint <dir>`, which names the file and the exact key path as **E006** for every offending file at once. (`--layer` and `--skip-setup` are the exception: they narrow file discovery, so files they exclude are never read.)
+
 ### Preflight checks
 
 A top-level `preflight:` block lists read-only probes that run **once, before any group**, and abort the run in seconds naming the failed dependency (kills the degraded-backend grind regime). Each check is a `Test`-shaped body on any runner + a `name` + a `timeout` (default 10s). **No `eventually:` / `capture:`** (validation-rejected). First failure → `PREFLIGHT FAILED: <name>` + diagnostics, non-zero exit, **zero groups run**. Passing runs print `preflight: N checks passed`. `--skip-preflight` bypasses; `--dry-run` lists them. Silently ignored by a pre-0.8.0 binary → lint **W006** + the header line make that detectable.

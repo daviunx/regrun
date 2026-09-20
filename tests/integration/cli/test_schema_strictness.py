@@ -10,6 +10,10 @@ Guarantees under test:
 
   * ``regrun lint`` exits non-zero with an E006 finding naming the undeclared key.
   * ``regrun run`` fails on the same file having executed nothing.
+  * the abort covers the whole directory, including a ``--file`` run that did not
+    select the offending file: every discovered file is parsed and validated
+    before selection is applied, so a narrowed green can never come out of a
+    suite holding a file the engine cannot load.
   * neither is triggered by a valid suite (no false E006).
 """
 
@@ -64,15 +68,51 @@ MISPLACED_KEY_COMMAND = {"cmd": "true", "assert": {"contains": "NEVER_CHECKED"}}
 VALID_COMMAND = {"cmd": "true"}
 
 
-def _run(test_dir: Path, tmp_path: Path):
+def _run(test_dir: Path, tmp_path: Path, *args: str):
     return CliRunner().invoke(
         cli,
-        ["run", str(test_dir)],
+        ["run", str(test_dir), *args],
         env={
             "REGRUN_RUNS_DIR": str(tmp_path / "runs"),
             "REGRUN_LOCK_TARGET": "demotarget",
         },
     )
+
+
+def _mixed_suite(tmp_path: Path) -> Path:
+    """A valid api file next to an UNRELATED schema-invalid api file."""
+    test_dir = _suite(tmp_path, VALID_COMMAND)
+    _write(
+        test_dir,
+        "01_valid.yaml",
+        {
+            "meta": {"product": "demo", "layer": "api", "runner": "bash"},
+            "groups": [
+                {
+                    "id": 5,
+                    "name": "Valid",
+                    "priority": "high",
+                    "tests": [_bash_test("V.1", VALID_COMMAND)],
+                }
+            ],
+        },
+    )
+    _write(
+        test_dir,
+        "02_invalid.yaml",
+        {
+            "meta": {"product": "demo", "layer": "api", "runner": "bash"},
+            "groups": [
+                {
+                    "id": 6,
+                    "name": "Invalid",
+                    "priority": "high",
+                    "tests": [_bash_test("X.1", MISPLACED_KEY_COMMAND)],
+                }
+            ],
+        },
+    )
+    return test_dir
 
 
 # ------------------------------------------------------------------------------ lint
@@ -115,3 +155,24 @@ def test_run_succeeds_on_the_same_suite_without_the_misplaced_key(tmp_path: Path
     result = _run(_suite(tmp_path, VALID_COMMAND), tmp_path)
     assert result.exit_code == 0, result.output
     assert "S.1" in result.output
+
+
+# --------------------------------------------------------- blast radius: whole directory
+
+
+def test_a_file_run_aborts_over_an_unselected_invalid_file(tmp_path: Path) -> None:
+    """Intended: every discovered file is validated before selection is applied.
+
+    A suite holding a file the engine cannot load is not a suite a narrowed green
+    can be trusted from, so the abort is not scoped to the selection.
+    """
+    result = _run(_mixed_suite(tmp_path), tmp_path, "--file", "01_valid")
+    assert result.exit_code != 0, result.output
+    assert "02_invalid.yaml" in result.output
+
+
+def test_that_abort_executes_nothing_and_writes_no_run_dir(tmp_path: Path) -> None:
+    result = _run(_mixed_suite(tmp_path), tmp_path, "--file", "01_valid")
+    assert "V.1" not in result.output
+    assert "S.1" not in result.output
+    assert not (tmp_path / "runs").exists()

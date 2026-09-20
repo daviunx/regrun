@@ -34,7 +34,7 @@ def _test_id_for(ctx: FileContext, loc: tuple[object, ...]) -> str:
 
 
 def check_file(ctx: FileContext) -> list[LintFinding]:
-    """E006 — the file does not validate against the test-file schema."""
+    """E006: the file does not validate against the test-file schema."""
     try:
         TestFile.model_validate(ctx.raw)
     except ValidationError as exc:

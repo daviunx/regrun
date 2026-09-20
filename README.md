@@ -236,6 +236,10 @@ regrun run TEST_DIR [OPTIONS]
 
 **Sharding requires disjoint environments.** Each shard needs its own database and its own search-index prefix. Two shards against one stack overwrite each other's fixtures and both verdicts become meaningless. regrun cannot verify the precondition, so it is the caller's to honour. Shards are built from the dependency graph: a file and its `requires` closure always land in the same shard, the setup layer runs in every shard, and a `serial: true` file gets the last shard to itself. Balance comes from greedy longest-processing-time packing, by test count when no timings are supplied. Plans are deterministic, so `--dry-run --shard k/n` can be diffed before a matrix is wired.
 
+**Narrowing does not narrow validation.** `--file`, `--rerun-failed` and `--shard` are applied *after* every discovered file has been parsed and validated, because selection reads what the files declare (the `requires` closure, the shard weights, the run order). So one schema-invalid file aborts every run of that directory, including a `--file` run that did not select it, and including `--dry-run`. That is intended: a suite holding a file the engine cannot load is not a suite a narrowed green can be trusted from, and the rest of the directory is the context the selection was computed in. (`--layer` and `--skip-setup` are the exception, because they narrow file *discovery* rather than the selection, so files they exclude are never read.)
+
+To recover, lint the directory: `regrun lint <dir>` names the file and the exact key path as **E006**, for every offending file at once rather than one abort at a time. Fix the keys it reports, then re-run the narrowed command.
+
 Examples:
 
 ```bash
