@@ -22,7 +22,8 @@ from pathlib import Path
 
 import structlog
 
-from regrun.engine.blocked import skipped_result
+from regrun.engine.blocked import BlockedTracker, blocked_result, file_failed, skipped_result
+from regrun.engine.depgraph import FileNode, Graph, build, closure
 from regrun.engine.phases import (
     PhaseOutcome,
     effective_strict,
@@ -30,7 +31,7 @@ from regrun.engine.phases import (
     run_preflight,
     run_sweep,
 )
-from regrun.engine.reporter import RunResult, TestResult
+from regrun.engine.reporter import RunResult, TestResult, build_file_timings
 from regrun.engine.run_lock import (
     RunLockError,
     acquire_run_lock,
@@ -210,9 +211,11 @@ async def _run_tests_locked(
         passed=sum(1 for r in all_results if r.passed),
         failed=sum(1 for r in all_results if not r.passed and not r.skipped and not r.error),
         skipped=sum(1 for r in all_results if r.skipped),
+        blocked=sum(1 for r in all_results if r.blocked_by),
         errors=sum(1 for r in all_results if r.error),
         duration_ms=(time.monotonic() - run_start) * 1000,
         test_results=all_results,
+        file_timings=build_file_timings(all_results),
         preflight_count=preflight_count,
         sweep_count=sweep_count,
     )
@@ -280,6 +283,43 @@ async def _run_gate_phases(
     return preflight_count, sweep_count, None
 
 
+def _build_graph(yaml_files: list[Path], test_files: list[TestFile]) -> Graph:
+    """Build the dependency graph over the files THIS run loaded.
+
+    ``requires:`` entries naming a file the run did not load are dropped: a
+    filtered run (``--layer``, ``--group``, ``--file``) cannot judge a producer it
+    never executed, and must not die because of it. A self-reference is dropped
+    for the same reason. Both are suite defects, and the linter's E005 is the
+    loud gate for them.
+    """
+    stems = {path.stem for path in yaml_files}
+    nodes = [
+        FileNode(
+            stem=path.stem,
+            layer=tf.meta.layer,
+            requires=[r for r in tf.meta.requires if r in stems and r != path.stem],
+            serial=tf.meta.serial,
+            test_count=sum(len(group.tests) for group in tf.groups),
+        )
+        for path, tf in zip(yaml_files, test_files)
+    ]
+    return build(nodes)
+
+
+def _blocked_group(group: Group, file_stem: str, blocker: str) -> list[TestResult]:
+    """Blocked results for every test in a group that was not executed."""
+    return [
+        blocked_result(
+            test_id=test.id,
+            test_name=test.name,
+            group_name=group.name,
+            file_stem=file_stem,
+            blocker=blocker,
+        )
+        for test in group.tests
+    ]
+
+
 async def _run_files(
     yaml_files: list[Path],
     test_files: list[TestFile],
@@ -289,7 +329,14 @@ async def _run_files(
     skip_cleanup: bool,
     no_strict_vars: bool,
 ) -> list[TestResult]:
-    """Iterate files in canonical order, running each file's groups."""
+    """Iterate files in canonical order, running each file's groups.
+
+    A file whose dependency closure contains a FAILED file is not executed: its
+    tests are reported BLOCKED naming the blocker, so one broken producer yields
+    one failure to read instead of a cascade. Its cleanup groups still run.
+    """
+    graph = _build_graph(yaml_files, test_files)
+    tracker = BlockedTracker()
     all_results: list[TestResult] = []
     aborted = False
 
@@ -302,38 +349,76 @@ async def _run_files(
         # Merge file-level variables sequentially (skip-if-set).
         merge_file_variables(store, test_file)
 
-        # Cache runners per type to reuse within a file
-        runner_cache: dict[str, Runner] = {}
+        blocker = tracker.blocker_for(closure(graph, path.stem))
+        if blocker is not None:
+            logger.warning("file_blocked", file=path.name, blocked_by=blocker)
+            tracker.record_blocked(path.stem)
 
-        for group in test_file.groups:
-            # Cleanup-flagged groups still run after an abort (unless suppressed
-            # by --skip-cleanup); every other remaining group is skipped.
-            force_run_cleanup = group.cleanup and not skip_cleanup
+        file_results, aborted = await _run_file_groups(
+            test_file, path, store, verbose, fail_fast, skip_cleanup, aborted, blocker
+        )
 
-            if aborted and not force_run_cleanup:
-                all_results.extend(skipped_result(t, group.name, path.stem) for t in group.tests)
-                continue
-
-            logger.info(
-                "running_group",
-                group_id=group.id,
-                group_name=group.name,
-                cleanup=group.cleanup,
-                after_abort=aborted,
-            )
-
-            results, aborted_here = await _run_group_tests(
-                group, test_file, path, store, runner_cache, verbose, fail_fast, force_run_cleanup
-            )
-            all_results.extend(results)
-            aborted = aborted or aborted_here
-
-        # Close persistent runner sessions opened for this file (e.g. the
-        # in-process fastmcp client). Runs after the groups loop — including on
-        # fail-fast abort — before moving to the next file.
-        await close_runners(runner_cache)
+        cleanup_groups = {g.name for g in test_file.groups if g.cleanup}
+        if blocker is None and file_failed(file_results, cleanup_groups):
+            tracker.record_failure(path.stem)
+        all_results.extend(file_results)
 
     return all_results
+
+
+async def _run_file_groups(
+    test_file: TestFile,
+    path: Path,
+    store: VariableStore,
+    verbose: bool,
+    fail_fast: bool,
+    skip_cleanup: bool,
+    aborted: bool,
+    blocker: str | None,
+) -> tuple[list[TestResult], bool]:
+    """Run one file's groups; returns its results and the carried abort flag.
+
+    ``blocker`` not None means the file is not executed: every non-cleanup group
+    is reported blocked. Cleanup groups run in every case except --skip-cleanup.
+    """
+    # Cache runners per type to reuse within a file
+    runner_cache: dict[str, Runner] = {}
+    file_results: list[TestResult] = []
+
+    for group in test_file.groups:
+        # Cleanup-flagged groups still run after an abort or a block (unless
+        # suppressed by --skip-cleanup); every other remaining group is not
+        # executed.
+        force_run_cleanup = group.cleanup and not skip_cleanup
+
+        if blocker is not None and not force_run_cleanup:
+            file_results.extend(_blocked_group(group, path.stem, blocker))
+            continue
+
+        if aborted and not force_run_cleanup:
+            file_results.extend(skipped_result(t, group.name, path.stem) for t in group.tests)
+            continue
+
+        logger.info(
+            "running_group",
+            group_id=group.id,
+            group_name=group.name,
+            cleanup=group.cleanup,
+            after_abort=aborted,
+        )
+
+        results, aborted_here = await _run_group_tests(
+            group, test_file, path, store, runner_cache, verbose, fail_fast, force_run_cleanup
+        )
+        file_results.extend(results)
+        aborted = aborted or aborted_here
+
+    # Close persistent runner sessions opened for this file (e.g. the in-process
+    # fastmcp client). Runs after the groups loop — including on fail-fast abort
+    # — before moving to the next file.
+    await close_runners(runner_cache)
+
+    return file_results, aborted
 
 
 async def _run_group_tests(

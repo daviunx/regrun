@@ -1,5 +1,7 @@
 """Result formatting: text tables and JSON output."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from regrun.engine.assertions import AssertionResult
@@ -30,11 +32,39 @@ class TestResult(BaseModel):
     group_name: str
     passed: bool
     skipped: bool = False
+    # BLOCKED is a DISCRIMINATED sub-kind of ``skipped``, not a new state: a
+    # blocked test keeps ``skipped=True`` so every existing consumer's counts
+    # keep their meaning, and additionally names the file that blocked it. A
+    # plain skip leaves this None, which ``exclude_none`` keeps out of the JSON.
+    blocked_by: str | None = None
     error: str | None = None
     duration_ms: float = 0.0
     file_stem: str = ""
     assertion_results: list[AssertionResult] = Field(default_factory=list)
     diagnostics: FailureDiagnostics | None = None
+
+
+class FileTiming(BaseModel):
+    """One row of the per-file timing table: where a run's time actually went."""
+
+    stem: str
+    tests: int
+    duration_ms: float
+    # Fraction of the run's summed test duration, 0.0-1.0.
+    share: float
+
+
+class BudgetBreach(BaseModel):
+    """A declared time budget that the run exceeded.
+
+    ``scope`` is ``file`` (``meta.budget_seconds``, ``stem`` names the file) or
+    ``run`` (``--budget-seconds``, ``stem`` is None).
+    """
+
+    scope: Literal["file", "run"]
+    stem: str | None = None
+    budget_seconds: float
+    actual_seconds: float
 
 
 class RunResult(BaseModel):
@@ -60,9 +90,20 @@ class RunResult(BaseModel):
     passed: int = 0
     failed: int = 0
     skipped: int = 0
+    # Blocked tests are a SUBSET of ``skipped``: reported separately so one
+    # failure reads as one failure, while ``skipped`` keeps its old meaning.
+    blocked: int = 0
     errors: int = 0
     duration_ms: float = 0.0
     test_results: list[TestResult] = Field(default_factory=list)
+
+    # Per-file timings, slowest first. The single source both formatters render,
+    # so the text table and report.json can never disagree about where the time
+    # went.
+    file_timings: list[FileTiming] = Field(default_factory=list)
+    # Declared budgets the run exceeded. Whether a breach reddens the run is the
+    # caller's opt-in, never implicit in the presence of a breach.
+    budget_breaches: list[BudgetBreach] = Field(default_factory=list)
 
     # Preflight phase (dependency-health probes run before any group).
     # ``preflight_count`` is the number of checks executed; the ``preflight_*``
@@ -84,6 +125,33 @@ class RunResult(BaseModel):
     sweep_error: str | None = None
 
 
+def build_file_timings(test_results: list[TestResult]) -> list[FileTiming]:
+    """Aggregate per-test durations into one row per file, slowest first.
+
+    ``share`` is the fraction of the run's summed test duration, so a reader sees
+    which file to attack without dividing anything. Ties break by stem, so two
+    runs of the same suite render the same table.
+    """
+    totals: dict[str, list[float]] = {}
+    for tr in test_results:
+        entry = totals.setdefault(tr.file_stem, [0.0, 0.0])
+        entry[0] += tr.duration_ms
+        entry[1] += 1
+
+    grand_total = sum(duration for duration, _count in totals.values())
+    rows = [
+        FileTiming(
+            stem=stem,
+            tests=int(count),
+            duration_ms=duration,
+            share=(duration / grand_total) if grand_total else 0.0,
+        )
+        for stem, (duration, count) in totals.items()
+    ]
+    rows.sort(key=lambda row: (-row.duration_ms, row.stem))
+    return rows
+
+
 def format_text(run_result: RunResult) -> str:
     """Format run results as a human-readable text table.
 
@@ -93,9 +161,22 @@ def format_text(run_result: RunResult) -> str:
     Returns:
         Formatted string with test results table and summary.
     """
+    lines = _header_section(run_result)
+    lines.extend(_table_section(run_result))
+    # Failures section: rendered BETWEEN the table and the summary so a
+    # tail-clipped terminal still shows the diagnostics, while "Result:" stays
+    # the last line for tooling that parses it.
+    lines.extend(_failures_section(run_result))
+    lines.extend(_timing_section(run_result))
+    lines.extend(_budget_section(run_result))
+    lines.extend(_summary_section(run_result))
+    return "\n".join(lines)
+
+
+def _header_section(run_result: RunResult) -> list[str]:
+    """Run identity and provenance: which engine, which stack, which run."""
     lines: list[str] = []
 
-    # Header
     header = f"Regression Run: {run_result.product}"
     if run_result.layer:
         header += f" (layer: {run_result.layer})"
@@ -122,6 +203,12 @@ def format_text(run_result: RunResult) -> str:
     if run_result.sweep_count > 0:
         lines.append(f"sweep: {run_result.sweep_count} steps completed")
     lines.append("")
+    return lines
+
+
+def _table_section(run_result: RunResult) -> list[str]:
+    """The per-test table, grouped by group name."""
+    lines: list[str] = []
 
     # Column widths
     id_width = max(
@@ -158,29 +245,61 @@ def format_text(run_result: RunResult) -> str:
             f"  {tr.test_id:<{id_width}}  {name_display:<{name_width}}  {status:<8}  {time_str:>8}  {details}"
         )
 
-    # Failures section: rendered BETWEEN the table and the summary so a
-    # tail-clipped terminal still shows the diagnostics, while "Result:" stays
-    # the last line for tooling that parses it.
-    lines.extend(_failures_section(run_result))
+    return lines
 
-    # Summary
-    lines.append("")
-    lines.append("-" * 60)
+
+def _timing_section(run_result: RunResult) -> list[str]:
+    """Per-file timings, slowest first. Empty when the run recorded none."""
+    if not run_result.file_timings:
+        return []
+
+    stem_width = max(max(len(row.stem) for row in run_result.file_timings), 4)
+    lines = ["", "", "Time per file", "=" * 60]
+    for row in run_result.file_timings:
+        seconds = row.duration_ms / 1000
+        lines.append(
+            f"  {row.stem:<{stem_width}}  {row.tests:>4} tests  "
+            f"{seconds:>7.1f}s  {row.share * 100:>5.1f}%"
+        )
+    return lines
+
+
+def _budget_section(run_result: RunResult) -> list[str]:
+    """Declared budgets the run exceeded. Empty when nothing breached."""
+    if not run_result.budget_breaches:
+        return []
+
+    lines = ["", "", f"BUDGET BREACH ({len(run_result.budget_breaches)})", "=" * 60]
+    for breach in run_result.budget_breaches:
+        subject = breach.stem if breach.scope == "file" else "run"
+        lines.append(
+            f"  {subject}: {breach.actual_seconds:.1f}s over a "
+            f"{breach.budget_seconds:.1f}s {breach.scope} budget"
+        )
+    return lines
+
+
+def _summary_section(run_result: RunResult) -> list[str]:
+    """The counts line and the parsed verdict, which stays last."""
     total_time = f"{run_result.duration_ms:.0f}ms"
-    lines.append(
-        f"  Total: {run_result.total}  "
-        f"Passed: {run_result.passed}  "
-        f"Failed: {run_result.failed}  "
-        f"Skipped: {run_result.skipped}  "
-        f"Errors: {run_result.errors}  "
-        f"Time: {total_time}"
-    )
+    lines = [
+        "",
+        "-" * 60,
+        (
+            f"  Total: {run_result.total}  "
+            f"Passed: {run_result.passed}  "
+            f"Failed: {run_result.failed}  "
+            f"Skipped: {run_result.skipped}  "
+            f"Blocked: {run_result.blocked}  "
+            f"Errors: {run_result.errors}  "
+            f"Time: {total_time}"
+        ),
+    ]
 
     overall = "PASS" if run_result.failed == 0 and run_result.errors == 0 else "FAIL"
     lines.append(f"  Result: {overall}")
     lines.append("")
-
-    return "\n".join(lines)
+    return lines
 
 
 def format_json(run_result: RunResult) -> str:
@@ -257,6 +376,8 @@ def _one_failure(tr: TestResult) -> list[str]:
 
 def _status_label(tr: TestResult) -> str:
     """Get the display status label for a test result."""
+    if tr.blocked_by:
+        return "BLOCKED"
     if tr.skipped:
         return "SKIP"
     if tr.error:
@@ -266,6 +387,8 @@ def _status_label(tr: TestResult) -> str:
 
 def _details_str(tr: TestResult) -> str:
     """Build a details string for a test result row."""
+    if tr.blocked_by:
+        return f"blocked by {tr.blocked_by}"
     if tr.error:
         return tr.error[:60]
     if tr.skipped:

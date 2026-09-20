@@ -95,7 +95,13 @@ def _testcase_xml(tr: TestResult, product: str) -> str:
     ]
 
     if tr.skipped:
-        parts.append("<skipped/>")
+        # A blocked test carries the blocker in ``message`` so the CI Tests tab
+        # says WHY it did not run. A plain skip keeps the bare form, and both map
+        # to the same skipped state, so the deploy gate's meaning is unchanged.
+        if tr.blocked_by:
+            parts.append(f"<skipped message={quoteattr(f'blocked by {tr.blocked_by}')}/>")
+        else:
+            parts.append("<skipped/>")
     elif tr.error:
         body = _cap_body(tr.error)
         parts.append(f"<error message={quoteattr(tr.error[:200])}>{escape(body)}</error>")
