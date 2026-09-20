@@ -16,9 +16,8 @@ jobs:
   # fires on push-to-main / pull_request), so without this the tag pipeline
   # would publish code no job had ever tested.
   #
-  # This deliberately deviates from the fleet convention in
-  # documentation/standards/infrastructure/library-publishing.md:177 ("tag
-  # pipelines are not re-linted"). That convention is safe on GitLab only
+  # This deliberately deviates from the common convention that tag pipelines
+  # are not re-linted. That convention is safe on GitLab only
   # because the branch pipeline already tested the SHA. regrun publishes to
   # PUBLIC PyPI, where a bad cut is irreversible -- a version can be yanked but
   # never reused -- and its release is the fleet's regression-gate binary. The

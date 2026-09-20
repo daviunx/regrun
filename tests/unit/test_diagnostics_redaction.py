@@ -1,9 +1,7 @@
 """Unit tests (TDD-RED) for diagnostics redaction.
 
 Redaction has two mechanisms, both pinned here against the CANONICAL
-``SENSITIVE_PATTERNS`` field set from
-``documentation/standards/development/observability.md`` §4 -- NOT an invented
-list:
+``SENSITIVE_PATTERNS`` field set the engine ships -- NOT an invented list:
 
 1. Field-name redaction of the request headers at capture time
    (``redact_headers``): any header whose lowercased name CONTAINS a canonical

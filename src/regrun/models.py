@@ -9,8 +9,8 @@ class SqlConnection(BaseModel):
     """Connection descriptor for the ``sql`` runner.
 
     All values are Jinja-renderable strings so the product-prefixed env
-    convention is preserved (e.g. ``database: "{{ env.get('RALLY_DB',
-    'rally_prod') }}"``) without introducing any new ``REGRUN_SQL_*`` vars.
+    convention is preserved (e.g. ``database: "{{ env.get('MYAPP_DB',
+    'myapp_test') }}"``) without introducing any new ``REGRUN_SQL_*`` vars.
     The runner probes for docker at run time: when available it uses
     ``docker exec -i {docker_container} psql -U {docker_user} -d {database}``;
     otherwise it falls back to ``psql {fallback_dsn}``.

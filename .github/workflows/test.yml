@@ -76,7 +76,8 @@ jobs:
         run: pip install --group dev .
 
       # Blocking, at DEFAULT strictness. The standard's `strict = true` is a
-      # documented deviation recorded in pyproject.toml -- ratchet task 5500a359.
+      # documented deviation recorded in pyproject.toml; the ratchet toward it is
+      # tracked separately.
       - name: Run mypy
         run: mypy src/regrun
 

@@ -140,7 +140,7 @@ Failures (1)
   Total: 1  Passed: 0  Failed: 1  ...
   Result: FAIL
 
-Full report: /Users/you/.regrun/runs/myproduct/20260711-161301/report.txt (json: report.json)
+Full report: /Users/you/.regrun/runs/myapp/20260711-161301/report.txt (json: report.json)
 ```
 
 Each failed test's diagnostics carries the **request echo** (method/URL/headers/body for httpx, tool+args for MCP, the rendered command list for bash, url/send/wait_for for WebSocket), the **response** status + body, **every** failed assertion at full length (not truncated), and the `eventually` **attempt count**. Passing tests stay terse. `--output json` includes `diagnostics` as an additive field (omitted when null).
@@ -281,14 +281,14 @@ Declare a connection in `meta.sql_connection` and put SQL in a test's `sql:` fie
 
 ```yaml
 meta:
-  product: rally
+  product: myapp
   layer: api
   runner: sql
   sql_connection:
-    docker_container: "{{ env.get('RALLY_COMPOSE_PROJECT', 'rally') }}-db-1"
+    docker_container: "{{ env.get('MYAPP_COMPOSE_PROJECT', 'myapp') }}-db-1"
     docker_user: postgres
-    database: "{{ env.get('RALLY_DB', 'rally_prod') }}"
-    fallback_dsn: "{{ env.get('RALLY_DSN', 'postgres://postgres@localhost:5432/rally_prod') }}"
+    database: "{{ env.get('MYAPP_DB', 'myapp_test') }}"
+    fallback_dsn: "{{ env.get('MYAPP_DSN', 'postgres://postgres@localhost:5432/myapp_test') }}"
 
 groups:
   - id: 5
@@ -304,7 +304,7 @@ groups:
 
 Dispatch: the runner probes `shutil.which("docker")` + `docker info` (cached per run). When docker is available it runs `docker exec -i {container} psql -U {user} -d {db}`; otherwise `psql {fallback_dsn}`. Every invocation carries `-v ON_ERROR_STOP=1 -q -t -A` and receives the statement on stdin. Stdout is parsed JSON-or-string exactly like the bash runner, so `contains` / `json_path` on `to_jsonb(...)` output transfer 1:1.
 
-- **Connection values are Jinja-renderable strings** — keep the product-prefixed env convention (`{{ env.get('RALLY_DB', ...) }}`); there are no new `REGRUN_SQL_*` vars.
+- **Connection values are Jinja-renderable strings** — keep the product-prefixed env convention (`{{ env.get('MYAPP_DB', ...) }}`); there are no new `REGRUN_SQL_*` vars.
 - **SQL only.** App-command steps (`docker compose exec … python -m …` seeders/reindexers) and OpenSearch curl steps stay `runner: bash`.
 - **Adoption is pin-gated:** `runner: sql` **hard-fails to parse on a pre-0.8.0 binary** (Literal enforcement). A suite may adopt it only after its CI pin is ≥ 0.8.0.
 
@@ -314,10 +314,10 @@ A top-level `preflight:` block lists read-only probes that run **once, before an
 
 ```yaml
 meta:
-  product: rally
+  product: myapp
   layer: api
   runner: httpx
-  endpoint: http://rally-api:8000
+  endpoint: http://myapp-api:8000
 
 preflight:
   - name: api-reachable
@@ -350,7 +350,7 @@ groups:
 Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock` for its duration, mechanically enforcing the sweep-first no-concurrency assumption. A second concurrent run for the same product **exits code 2** naming the product + lock path:
 
 ```
-Another regression run for 'rally' is in progress (lock: /…/.regrun/runs/rally/.lock)
+Another regression run for 'myapp' is in progress (lock: /…/.regrun/runs/myapp/.lock)
 ```
 
 - flock **self-releases on process death** (incl. SIGKILL) — no stale-lock protocol.
@@ -978,3 +978,7 @@ Tests live at `tests/integration/cli/` and cover CLI behaviour end-to-end.
 ## License
 
 MIT
+
+---
+
+Maintained by [Neomanex](https://neomanex.com).

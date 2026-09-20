@@ -7,7 +7,7 @@ must still EXECUTE when ``--fail-fast`` aborts the run (today the abort path
 marks every remaining test skipped — cleanup included — which is how filtered
 and aborted runs leak fixtures).
 
-Behavior matrix (from analysis.md, rally-regression-flake-hardening):
+Behavior matrix (from analysis.md):
 
 | Invocation                      | Non-cleanup groups   | cleanup: true groups        |
 |---------------------------------|----------------------|-----------------------------|
