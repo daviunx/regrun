@@ -203,6 +203,37 @@ def test_w009_clean_not_empty(tmp_path: Path) -> None:
     assert "W009" not in _rules(lint_directory(tmp_path))
 
 
+def test_w009_clean_exists_with_second_operator(tmp_path: Path) -> None:
+    # exists is not the SOLE operator: the sibling operator is evaluated too, so
+    # the assert cannot pass on a null value and W009 must stay silent.
+    _write(
+        tmp_path,
+        "01_api.yaml",
+        _api_doc(
+            [
+                {
+                    "id": 5,
+                    "name": "A",
+                    "tests": [
+                        {
+                            "id": "A.1",
+                            "name": "t",
+                            "method": "GET",
+                            "path": "/x",
+                            "assert": {
+                                "json_path": {
+                                    "$.summary": {"exists": True, "starts_with": "myapp-"}
+                                }
+                            },
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    assert "W009" not in _rules(lint_directory(tmp_path))
+
+
 def test_w009_clean_exists_false(tmp_path: Path) -> None:
     # exists: false is a genuine absence assertion — not the null trap.
     _write(
