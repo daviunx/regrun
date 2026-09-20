@@ -195,8 +195,9 @@ Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, el
 | `starts_with` | `{ starts_with: "ntk_" }` | String prefix |
 | `matches` | `{ matches: "^[a-z]+$" }` | Regex search (`re.search`) |
 | `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when NO value matched by the path equals the expected value (all matches, string-coerced). Empty/missing match set passes. Use for isolation checks: assert a forbidden value is absent regardless of how many results return |
+| `any_contains` | `"$.results[*].name": { any_contains: "{{RUN_ID}}" }` | Array presence: scans every value matched by the path and passes when at least one value's string form contains the substring, whatever its position. An empty/missing match set FAILS, the opposite of `not_contains`. Use for order-independent presence, such as a write-then-read probe that may not rank first |
 
-Several operators may sit under one path (`"$.slug": { not_empty: true, starts_with: "myapp-" }`). All of them are evaluated, each reported on its own line, and the test passes only when every one passes (AND). An unrecognised key under a path fails the test instead of being ignored.
+An entry maps a path to one **or more** operators. Every operator under a path is evaluated, each reported on its own line, and the test passes only when every one passes (AND). An unrecognised key under a path fails the test instead of being ignored.
 
 ### Required assertions by operation
 

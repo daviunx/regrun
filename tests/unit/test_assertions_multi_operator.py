@@ -142,6 +142,16 @@ def test_no_recognised_operator_fails_with_unknown_condition_type() -> None:
     assert results[0].message == "Unknown condition type: ['bogus_op']"
 
 
+def test_unknown_only_condition_on_missing_path_names_the_unknown_key() -> None:
+    # The cause is the key, not the path: a condition with no recognised
+    # operator could not be answered by any match, so it reports the unknown
+    # key rather than the path.
+    results = _run({"$.absent": {"bogus_op": 1}}, {"present": 1})
+    assert len(results) == 1
+    assert results[0].passed is False
+    assert results[0].message == "Unknown condition type: ['bogus_op']"
+
+
 def test_empty_condition_fails_with_unknown_condition_type() -> None:
     results = _run({"$.name": {}}, {"name": "myapp"})
     assert len(results) == 1
