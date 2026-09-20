@@ -635,7 +635,7 @@ Pure `api` or `mcp` files should not use per-test `runner:` overrides; the file'
 
 ### `json_path` operators
 
-Each entry under `json_path:` maps a JSONPath expression to one operator:
+Each entry under `json_path:` maps a JSONPath expression to one **or more** operators. Every operator listed under a path is evaluated and reported separately, and the test passes only when all of them pass (AND):
 
 | Operator | Example | Description |
 |----------|---------|-------------|
@@ -650,8 +650,11 @@ Each entry under `json_path:` maps a JSONPath expression to one operator:
 | `matches` | `"$.slug": { matches: "^[a-z0-9-]+$" }` | Regex search |
 | `not_empty` | `"$.items": { not_empty: true }` | Value is non-empty string, list, or dict |
 | `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when no value matched by the path equals the expected value (all matches, string-coerced); empty/missing match set passes |
+| `any_contains` | `"$.results[*].name": { any_contains: "{{RUN_ID}}" }` | Array presence: scans every value matched by the path and passes when at least one value's string form contains the substring, whatever its position. An empty/missing match set FAILS, the opposite of `not_contains` |
 
 Note: numeric operators (`gt`, `gte`, `lt`, `lte`) are the correct names. `greater_than`, `less_than`, `>=`, and `<=` are not valid.
+
+A path carrying several operators (`"$.slug": { not_empty: true, starts_with: "myapp-" }`) reports one result per operator, so the report names which one failed. An unrecognised key under a path fails the test rather than being ignored.
 
 ### Response normalization (fastmcp runner)
 
