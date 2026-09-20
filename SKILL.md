@@ -278,7 +278,9 @@ Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`
 
 - **`status` accepts a list**: `status: [200, 201]` matches either code. Use for endpoints that may return different success codes depending on whether a resource was created or already existed.
 
-- **`capture:` on bash uses per-command, not per-test**: place `capture:` inside each `commands` list item, not at the test level. Test-level `capture:` is for httpx/fastmcp JSONPath extraction from the response body.
+- **`capture:` on bash uses per-command, not per-test**: place `capture:` inside each `commands` list item, not at the test level. Test-level `capture:` is for httpx/fastmcp JSONPath extraction from the response body. `assert:` is the mirror image: test level only, never inside a `commands` item.
+
+- **Every block rejects keys it does not declare**: the file, `meta`, an `auth` profile, `preflight` and `sweep` steps, a group, a test, `assert`, a bash command, `eventually`, `ws_config` and `meta.sql_connection`. A misplaced key (a top-level `endpoint:` that belongs under `meta:`, an `assert:` inside a `commands` item) is a condition or a setting nothing reads, so it fails at load rather than going quietly missing: `run` aborts naming the location, `lint` reports E006. There is no opt-out; move the key to the block that declares it, or remove it.
 
 - **`meta.product` is for reporting only**: it does not need to match any registry or config file. Use a meaningful name for log output and CI summaries.
 
@@ -375,6 +377,7 @@ regrun lint tests/regression/ --budget-floor 90 --allow-positional '06_*.yaml'
 | E001 | error | Duplicate group id within a file |
 | E002 | error | mcp-layer file sorts after a `*cleanup*` file (shared api_key revoked) |
 | E003 | error | Test has `auth:` with a null value (the `auth: none` trap) |
+| E006 | error | The file parses as YAML but does not validate against the schema: an undeclared key, a missing required key, or a wrong type. Everything `run` refuses to load, `lint` reports |
 | W001 | warn | MCP tool test asserts `is_error` with no `json_path` |
 | W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`): suppress with inline `# lint: allow-positional` or `--allow-positional GLOB` |
 | W003 | warn | `eventually:` ceiling below the budget floor (default 75s) |

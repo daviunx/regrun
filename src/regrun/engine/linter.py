@@ -26,6 +26,13 @@ E004 err  A test on an auth-consuming runner (httpx/fastmcp/websocket)
 E005 err  A ``meta.requires:`` entry no run can satisfy: an unknown stem, the
           file itself, a cycle, or a file that runs AFTER its dependent in the
           canonical order. Directory-level.
+E006 err  The file parses as YAML but does not validate against the test-file
+          schema: an undeclared key (a misplaced or misspelt one, silently
+          dropped before the schema models forbade extras), a missing required
+          key, or a wrong type. Every schema model forbids extra keys, so the
+          engine refuses such a file at load; E006 keeps the linter from being
+          blinder than the engine. One finding per pydantic error, carrying the
+          failing location and message.
 W001 warn An MCP tool test asserts ``is_error`` with no ``json_path`` block
           (asserts the call didn't error, not that it did the right thing).
 W002 warn ``equals``/``contains`` on a positional array json_path (``[0]`` /

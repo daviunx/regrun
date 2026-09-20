@@ -380,6 +380,7 @@ regrun lint TARGET [OPTIONS]
 | E003 | error | A test has `auth:` with a null value (the `auth: none` string-literal trap) |
 | E004 | error | A test on an auth-consuming runner (`httpx`/`fastmcp`/`websocket`) references an auth profile absent from that file's own `auth:` block, via `auth:` or `meta.default_auth` |
 | E005 | error | A `meta.requires:` entry no run can satisfy: an unknown stem, the file itself, a cycle, or a file that runs after its dependent |
+| E006 | error | The file parses as YAML but does not validate against the schema: an undeclared key, a missing required key, or a wrong type. One finding per validation error, carrying the failing location and the message. Everything `run` refuses to load, `lint` reports |
 | W001 | warn | MCP tool test asserts `is_error` with no `json_path` on the response |
 | W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`): rank-0 fragile. Suppress per-test with an inline `# lint: allow-positional` comment, or per-file with `--allow-positional` |
 | W003 | warn | `eventually:` worst-case ceiling below the budget floor (default 75s) |
@@ -427,6 +428,26 @@ meta:
 The `product` field appears in report output. It does not need to match any external registry.
 
 **Unknown `meta` keys are rejected at load.** A typo such as `require:` would otherwise be accepted and silently ignored, leaving the file with no declared dependency and nothing anywhere saying so.
+
+### Unknown keys are rejected everywhere
+
+Every block in this reference rejects keys it does not declare: the file itself, `meta`, an `auth` profile, `preflight` and `sweep` steps, a group, a test, `assert`, a bash command, `eventually`, `ws_config` and `meta.sql_connection`. A key a block does not declare is read by nothing, so accepting it would mean accepting a condition or a setting that never takes effect. (`variables:` and a `capture:` mapping are open by design: their keys are variable names you choose.)
+
+Both entrypoints are loud about it. `regrun run` aborts before executing anything, naming the file, the location and the key:
+
+```
+Error: Failed to parse 01_items.yaml: 1 validation error for TestFile
+groups.0.tests.0.commands.0.assert
+  Extra inputs are not permitted [type=extra_forbidden, ...]
+```
+
+`regrun lint` reports the same thing as error **E006**, so the static gate cannot pass a file the engine would refuse:
+
+```
+01_items.yaml:A.1 E006 (error) schema violation at groups.0.tests.0.commands.0.assert: Extra inputs are not permitted
+```
+
+There is no opt-out. Read the reported location, then move the key to the block that declares it, or remove it.
 
 ### `variables` block
 
