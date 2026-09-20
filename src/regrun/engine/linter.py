@@ -23,6 +23,9 @@ E004 err  A test on an auth-consuming runner (httpx/fastmcp/websocket)
           — that is not defined in THIS file's ``auth:`` block. Profiles are
           per-file; before regrun 0.9.1 the request silently went out with NO
           credentials (401-instead-of-403 masquerading as a product bug).
+E005 err  A ``meta.requires:`` entry no run can satisfy: an unknown stem, the
+          file itself, a cycle, or a file that runs AFTER its dependent in the
+          canonical order. Directory-level.
 W001 warn An MCP tool test asserts ``is_error`` with no ``json_path`` block
           (asserts the call didn't error, not that it did the right thing).
 W002 warn ``equals``/``contains`` on a positional array json_path (``[0]`` /
@@ -69,6 +72,11 @@ W010 warn A ``$.data.*`` path in ``json_path`` or ``capture`` within an
 W011 warn Best-effort: fixture-name prefixes created by create-shaped tests
           (``<prefix>{{RUN_ID}}``) that appear in NO sweep step or
           ``cleanup: true`` group — unswept fixture families. Directory-level.
+W012 warn A file uses a variable ANOTHER suite file captures without declaring
+          ``meta.requires:`` for it — invisible coupling that survives only
+          while the full suite runs in order. Cleared by declaring the
+          dependency, by producing the value locally, or by the producer being
+          a ``layer: setup`` file. Directory-level.
 ==== ==== ================================================================
 """
 

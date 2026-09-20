@@ -13,13 +13,22 @@ Module       Rules
 ``timing``    W003
 ``fixtures``  W004, W005, W007, W011
 ``hosts``     W008
+``variables`` W012, E005
 ============ =====================================================
 """
 
 from pathlib import Path
 from typing import Callable
 
-from regrun.engine.lint_rules import asserts, auth, fixtures, hosts, structure, timing
+from regrun.engine.lint_rules import (
+    asserts,
+    auth,
+    fixtures,
+    hosts,
+    structure,
+    timing,
+    variables,
+)
 from regrun.engine.lint_rules.context import (
     ERROR,
     WARN,
@@ -53,6 +62,7 @@ FILE_RULES: tuple[FileRule, ...] = (
 DIRECTORY_RULES: tuple[DirectoryRule, ...] = (
     structure.check_directory,
     fixtures.check_sweep_coverage,
+    variables.check_directory,
 )
 
 __all__ = [
