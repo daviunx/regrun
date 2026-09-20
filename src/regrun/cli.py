@@ -3,207 +3,19 @@
 import asyncio
 import logging
 import sys
-from pathlib import Path
 
 import click
 import structlog
-import yaml
 
+from regrun import cli_output
 from regrun.config import settings
-from regrun.engine import artifacts, executor
-from regrun.engine.variables import UnresolvedVariableError
+from regrun.engine import executor, selection
 from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
-from regrun.engine.junit import format_junit
-from regrun.engine.reporter import format_json, format_text
-from regrun.models import Group, TestFile
+from regrun.engine.reporter import RunResult
+from regrun.engine.selection import CONFIG_FILENAME
+from regrun.engine.variables import UnresolvedVariableError
 
 logger = structlog.get_logger()
-
-CONFIG_FILENAME = "regrun.yaml"
-
-
-def _find_config() -> tuple[dict, Path] | None:
-    """Walk up from CWD looking for regrun.yaml.
-
-    Returns (parsed_config, project_root) or None if not found.
-    """
-    current = Path.cwd().resolve()
-    for _ in range(10):
-        config_path = current / CONFIG_FILENAME
-        if config_path.is_file():
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            if isinstance(config, dict):
-                return config, current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    return None
-
-
-def _resolve_target(target: str) -> Path:
-    """Resolve a CLI target to a test directory path.
-
-    If target is an existing directory, use it directly.
-    Otherwise, look up as a product name in regrun.yaml.
-    """
-    target_path = Path(target)
-    if target_path.is_dir():
-        return target_path.resolve()
-
-    # Not a directory — look up in regrun.yaml
-    result = _find_config()
-    if result is None:
-        raise click.ClickException(
-            f"'{target}' is not a directory and no {CONFIG_FILENAME} found. "
-            f"Pass a directory path or create {CONFIG_FILENAME} with a 'paths' key."
-        )
-
-    config, project_root = result
-    paths = config.get("paths")
-    if not paths or not isinstance(paths, dict):
-        raise click.ClickException(f"{CONFIG_FILENAME} found but missing 'paths' mapping.")
-
-    test_path_rel = paths.get(target)
-    if not test_path_rel:
-        known = ", ".join(paths.keys())
-        raise click.ClickException(f"Unknown product '{target}'. Known: {known}")
-
-    resolved = project_root / test_path_rel
-    if not resolved.is_dir():
-        raise click.ClickException(
-            f"Path for '{target}' resolved to {resolved} but directory not found."
-        )
-    return resolved
-
-
-def _discover_yaml_files(
-    test_dir: Path,
-    layer: str | None,
-    skip_setup: bool = False,
-) -> list[Path]:
-    """Discover YAML test files in a directory, optionally filtered by layer.
-
-    Setup files are always included as a dependency unless skip_setup=True.
-    Files are ordered: setup layer first, then alphabetically.
-    """
-    if not test_dir.is_dir():
-        raise click.ClickException(f"Test directory not found: {test_dir}")
-
-    yaml_files = sorted(test_dir.glob("*.yaml"))
-    if not yaml_files:
-        raise click.ClickException(f"No YAML test files found in {test_dir}")
-
-    # Parse meta from each file to get the layer, then filter and sort
-    file_layers: list[tuple[Path, str]] = []
-    for f in yaml_files:
-        try:
-            with open(f) as fh:
-                raw = yaml.safe_load(fh)
-            file_layer = raw.get("meta", {}).get("layer", "unknown")
-            file_layers.append((f, file_layer))
-        except Exception as e:
-            logger.warning("yaml_parse_skip", file=str(f), error=str(e))
-
-    # Filter by layer -- setup auto-included as dependency unless skipped
-    if layer and layer != "setup":
-        if skip_setup:
-            file_layers = [(f, fl) for f, fl in file_layers if fl == layer]
-        else:
-            file_layers = [(f, fl) for f, fl in file_layers if fl in (layer, "setup")]
-    elif layer == "setup":
-        file_layers = [(f, fl) for f, fl in file_layers if fl == "setup"]
-
-    # Sort: setup first, then alphabetically
-    layer_order = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
-    file_layers.sort(key=lambda x: (layer_order.get(x[1], 99), x[0].name))
-
-    return [f for f, _ in file_layers]
-
-
-def _parse_yaml_file(path: Path) -> TestFile:
-    """Parse a YAML file into a TestFile model."""
-    with open(path) as f:
-        raw = yaml.safe_load(f)
-    return TestFile.model_validate(raw)
-
-
-def _filter_groups(
-    test_file: TestFile,
-    group_ids: list[int] | None,
-    priority: str | None,
-    skip_cleanup: bool = False,
-) -> TestFile:
-    """Filter test file groups by group IDs and/or priority.
-
-    Cleanup-flagged groups (``cleanup: true``) are exempt from filtering — they
-    are always retained, mirroring the setup-always guarantee, so filtered
-    iteration runs still sweep the environment. ``--skip-cleanup`` removes that
-    exemption: cleanup groups are then subject to the normal filters (and dropped
-    when they don't match), which is how a developer iterates without a sweep.
-    """
-    groups = test_file.groups
-
-    def _matches(g: Group) -> bool:
-        if group_ids and g.id not in group_ids:
-            return False
-        if priority and g.priority != priority:
-            return False
-        return True
-
-    if group_ids or priority:
-        groups = [g for g in groups if _matches(g) or (g.cleanup and not skip_cleanup)]
-
-    return test_file.model_copy(update={"groups": groups})
-
-
-def _print_dry_run(yaml_files: list[Path], test_files: list[TestFile]) -> None:
-    """Print the test plan without executing."""
-    click.echo("\n  DRY RUN - Test Plan")
-    click.echo("  " + "=" * 40)
-
-    preflight_checks = [
-        (path, chk) for path, tf in zip(yaml_files, test_files) for chk in (tf.preflight or [])
-    ]
-    if preflight_checks:
-        click.echo(f"\n  Preflight ({len(preflight_checks)} checks):")
-        for path, chk in preflight_checks:
-            runner = chk.runner or "meta.runner"
-            click.echo(f"    [{path.name}] {chk.name} (runner: {runner})")
-
-    sweep_steps = [
-        (path, step) for path, tf in zip(yaml_files, test_files) for step in (tf.sweep or [])
-    ]
-    if sweep_steps:
-        click.echo(f"\n  Sweep ({len(sweep_steps)} steps):")
-        for path, step in sweep_steps:
-            runner = step.runner or "meta.runner"
-            click.echo(f"    [{path.name}] {step.name} (runner: {runner})")
-
-    total_tests = 0
-    for path, tf in zip(yaml_files, test_files):
-        click.echo(f"\n  File: {path.name}")
-        click.echo(f"    Layer: {tf.meta.layer} | Runner: {tf.meta.runner}")
-        if tf.meta.endpoint:
-            click.echo(f"    Endpoint: {tf.meta.endpoint}")
-        if tf.meta.mcp_endpoint:
-            click.echo(f"    MCP Endpoint: {tf.meta.mcp_endpoint}")
-
-        for group in tf.groups:
-            test_count = len(group.tests)
-            total_tests += test_count
-            click.echo(
-                f"    Group {group.id}: {group.name} "
-                f"({test_count} tests, priority: {group.priority})"
-            )
-            for test in group.tests:
-                method = test.method or test.tool or "bash"
-                path_or_tool = test.path or test.tool or ""
-                click.echo(f"      [{test.id}] {test.name} ({method} {path_or_tool})")
-
-    click.echo(f"\n  Total: {total_tests} tests")
-    click.echo("")
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -229,6 +41,44 @@ def _configure_logging(verbose: bool) -> None:
 def cli() -> None:
     """YAML-driven regression test runner for HTTP APIs, MCP servers, and shell commands."""
     pass
+
+
+def _execute(
+    plan: selection.RunPlan,
+    fail_fast: bool,
+    verbose: bool,
+    skip_cleanup: bool,
+    skip_preflight: bool,
+    no_lock: bool,
+    no_strict_vars: bool,
+    skip_sweep: bool,
+) -> RunResult:
+    """Run the plan (per-product lock held for the duration unless --no-lock)."""
+    try:
+        return asyncio.run(
+            executor.run_tests(
+                plan.paths,
+                plan.test_files,
+                fail_fast,
+                verbose,
+                skip_cleanup,
+                skip_preflight,
+                no_lock,
+                no_strict_vars,
+                skip_sweep,
+            )
+        )
+    except executor.RunLockError as e:
+        click.echo(str(e), err=True)
+        sys.exit(2)
+    except UnresolvedVariableError as e:
+        # A file-level `variables:` declaration referenced an undefined variable
+        # (strict-vars, default on) — a suite defect, aborted before any group.
+        click.echo(
+            f"UNRESOLVED VARIABLE: {e} (opt out with meta.strict_vars: false or --no-strict-vars)",
+            err=True,
+        )
+        sys.exit(1)
 
 
 @cli.command()
@@ -316,136 +166,42 @@ def run(
     verbose = verbose or settings.verbose
     _configure_logging(verbose)
 
-    test_path = _resolve_target(target)
+    plan = selection.build_run_plan(target, layer, group_str, priority, skip_setup, skip_cleanup)
 
-    # Parse group IDs
-    group_ids: list[int] | None = None
-    if group_str:
-        try:
-            group_ids = [int(g.strip()) for g in group_str.split(",")]
-        except ValueError:
-            raise click.ClickException(
-                f"Invalid group IDs: '{group_str}'. Use comma-separated integers."
-            )
-
-    # Discover YAML files
-    yaml_files = _discover_yaml_files(test_path, layer, skip_setup)
-    logger.info("discovered_files", count=len(yaml_files), test_dir=str(test_path), layer=layer)
-
-    # Parse all files, tracking which paths matched
-    matched_paths: list[Path] = []
-    test_files: list[TestFile] = []
-    for path in yaml_files:
-        try:
-            tf = _parse_yaml_file(path)
-            # Setup runs in full when auto-included as a dependency -- group/priority
-            # filters rarely match its groups, which would drop captured variables.
-            # Only filter setup when it is the explicit target (--layer setup).
-            if not (tf.meta.layer == "setup" and layer != "setup"):
-                tf = _filter_groups(tf, group_ids, priority, skip_cleanup)
-            if tf.groups:
-                matched_paths.append(path)
-                test_files.append(tf)
-        except Exception as e:
-            raise click.ClickException(f"Failed to parse {path.name}: {e}")
-
-    if not test_files:
-        raise click.ClickException("No test files matched the given filters.")
-
-    # Apply endpoint overrides from env vars (CI uses service aliases, not *.localhost)
-    if settings.api_endpoint:
-        for tf in test_files:
-            tf.meta.endpoint = settings.api_endpoint
-    if settings.mcp_endpoint:
-        for tf in test_files:
-            tf.meta.mcp_endpoint = settings.mcp_endpoint
-
-    # Dry run: just print the plan
     if dry_run:
-        _print_dry_run(matched_paths, test_files)
+        cli_output.print_dry_run(plan.paths, plan.test_files)
         return
 
-    # Execute tests (per-product lock held for the duration unless --no-lock)
-    try:
-        run_result = asyncio.run(
-            executor.run_tests(
-                matched_paths,
-                test_files,
-                fail_fast,
-                verbose,
-                skip_cleanup,
-                skip_preflight,
-                no_lock,
-                no_strict_vars,
-                skip_sweep,
-            )
+    result = _execute(
+        plan, fail_fast, verbose, skip_cleanup, skip_preflight, no_lock, no_strict_vars, skip_sweep
+    )
+
+    # Preflight / sweep failure: instant abort before any group ran.
+    if result.preflight_failed:
+        cli_output.print_phase_abort(
+            "PREFLIGHT",
+            result.preflight_failed_name,
+            result.preflight_error,
+            result.preflight_diagnostics,
         )
-    except executor.RunLockError as e:
-        click.echo(str(e), err=True)
-        sys.exit(2)
-    except UnresolvedVariableError as e:
-        # A file-level `variables:` declaration referenced an undefined variable
-        # (strict-vars, default on) — a suite defect, aborted before any group.
-        click.echo(
-            f"UNRESOLVED VARIABLE: {e} (opt out with meta.strict_vars: false or --no-strict-vars)",
-            err=True,
+        sys.exit(1)
+    if result.sweep_failed:
+        cli_output.print_phase_abort(
+            "SWEEP", result.sweep_failed_name, result.sweep_error, result.sweep_diagnostics
         )
         sys.exit(1)
 
-    # Preflight failure: instant abort before any group ran. Print the failed
-    # dependency + its diagnostics and exit non-zero; no group was executed.
-    if run_result.preflight_failed:
-        click.echo(f"PREFLIGHT FAILED: {run_result.preflight_failed_name}")
-        if run_result.preflight_error:
-            click.echo(f"  error: {run_result.preflight_error}")
-        diag = run_result.preflight_diagnostics
-        if diag is not None:
-            for ar in diag.failed_assertions:
-                click.echo(f"  ✗ {ar.assertion_type}: {ar.message}")
-            if diag.response_body is not None:
-                click.echo(f"  response body: {diag.response_body}")
-        sys.exit(1)
-
-    # Sweep failure: same contract as preflight — instant abort, zero groups
-    # executed (a suite must not create fixtures into an unswept environment).
-    if run_result.sweep_failed:
-        click.echo(f"SWEEP FAILED: {run_result.sweep_failed_name}")
-        if run_result.sweep_error:
-            click.echo(f"  error: {run_result.sweep_error}")
-        diag = run_result.sweep_diagnostics
-        if diag is not None:
-            for ar in diag.failed_assertions:
-                click.echo(f"  ✗ {ar.assertion_type}: {ar.message}")
-            if diag.response_body is not None:
-                click.echo(f"  response body: {diag.response_body}")
-        sys.exit(1)
-
-    # Emit the results FIRST and unconditionally -- showing the run is the whole
-    # point; artifact persistence is a best-effort side channel that must never
-    # suppress it.
-    text_report = format_text(run_result)
-    json_report = format_json(run_result)
-    junit_report = format_junit(run_result)
-    click.echo(json_report if output_format == "json" else text_report)
-
-    # Persist the full report to disk (every run -- pass, fail, or abort). A
-    # write failure (unwritable REGRUN_RUNS_DIR, disk full, bad product name) is
-    # surfaced as a warning on stderr and never changes the exit code.
-    try:
-        run_dir = artifacts.write_run_artifacts(run_result, text_report, json_report, junit_report)
-        click.echo(artifacts.pointer_line(run_dir))
-    except OSError as e:
-        click.echo(f"Warning: could not persist run artifacts: {e}", err=True)
+    cli_output.emit_and_persist(result, output_format)
 
     # Exit with non-zero if any failures
-    if run_result.failed > 0 or run_result.errors > 0:
+    if result.failed > 0 or result.errors > 0:
         sys.exit(1)
 
 
 @cli.command("list")
 def list_products() -> None:
     """List products registered in regrun.yaml."""
-    result = _find_config()
+    result = selection.find_config()
     if result is None:
         raise click.ClickException(f"No {CONFIG_FILENAME} found. Create one with a 'paths' key.")
 
@@ -490,7 +246,7 @@ def lint(target: str, strict: bool, budget_floor: float, allow_positional: tuple
 
     TARGET is a directory path or a product name from regrun.yaml.
     """
-    test_path = _resolve_target(target)
+    test_path = selection.resolve_target(target)
     findings = lint_directory(test_path, budget_floor, allow_positional)
     click.echo(format_lint_report(findings, strict))
     sys.exit(lint_exit_code(findings, strict))

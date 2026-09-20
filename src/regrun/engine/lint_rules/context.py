@@ -26,7 +26,7 @@ ALLOW_NOCREATE = "# lint: allow-nocreate"
 ALLOW_EXISTS = "# lint: allow-exists"
 
 # Canonical run order: layer rank then filename. The linter must consume the
-# same order the runner derives (``cli._discover_yaml_files``), never re-derive
+# same order the runner derives (``selection.discover_yaml_files``), never re-derive
 # a different one.
 LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
 

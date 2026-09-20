@@ -6,7 +6,7 @@ Runner construction lives in ``runner_factory``, single-test adjudication in
 
 Cleanup-always guarantee (mirror of the setup-always guarantee):
   * Groups flagged ``cleanup: true`` survive ``--group`` / ``--priority``
-    filtering (handled in ``cli._filter_groups``).
+    filtering (handled in ``selection.filter_groups``).
   * On a ``--fail-fast`` abort, cleanup-flagged groups still EXECUTE — in the
     failing file and in every later file — while all other remaining tests are
     marked skipped. The run's exit code still reflects the original failure.
@@ -24,6 +24,7 @@ import structlog
 
 from regrun.engine.blocked import skipped_result
 from regrun.engine.phases import (
+    PhaseOutcome,
     effective_strict,
     merge_file_variables,
     run_preflight,
@@ -44,7 +45,7 @@ from regrun.engine.runner_factory import (
     get_runner_for_test,
     unknown_auth_profile_error,
 )
-from regrun.engine.single_test import execute_single_test
+from regrun.engine.single_test import error_result, execute_single_test
 from regrun.engine.variables import VariableStore
 from regrun.models import Group, TestFile
 
@@ -185,44 +186,19 @@ async def _run_tests_locked(
 
     _load_env_file(yaml_files, test_files, store)
 
-    # Preflight phase: read-only dependency-health probes, run once before any
-    # group. A failure aborts the run in seconds naming the failed dependency.
-    preflight_count = 0
-    if not skip_preflight:
-        outcome = await run_preflight(yaml_files, test_files, store, verbose, no_strict_vars)
-        if outcome is not None:
-            preflight_count = outcome.count
-            if outcome.failed_result is not None:
-                return ctx.result(
-                    store,
-                    duration_ms=(time.monotonic() - run_start) * 1000,
-                    preflight_count=outcome.count,
-                    preflight_failed=True,
-                    preflight_failed_name=outcome.failed_name,
-                    preflight_diagnostics=outcome.failed_result.diagnostics,
-                    preflight_error=outcome.failed_result.error,
-                )
-
-    # Sweep phase: declared pattern-based cleanup of prior-run artifacts, run
-    # once after preflight and before any group. A failure aborts the run —
-    # the structural sweep-first guarantee (creating fixtures into an unswept
-    # environment is how cross-run collisions are born).
-    sweep_count = 0
-    if not skip_sweep:
-        outcome = await run_sweep(yaml_files, test_files, store, verbose, no_strict_vars)
-        if outcome is not None:
-            sweep_count = outcome.count
-            if outcome.failed_result is not None:
-                return ctx.result(
-                    store,
-                    duration_ms=(time.monotonic() - run_start) * 1000,
-                    preflight_count=preflight_count,
-                    sweep_count=outcome.count,
-                    sweep_failed=True,
-                    sweep_failed_name=outcome.failed_name,
-                    sweep_diagnostics=outcome.failed_result.diagnostics,
-                    sweep_error=outcome.failed_result.error,
-                )
+    preflight_count, sweep_count, abort = await _run_gate_phases(
+        ctx,
+        yaml_files,
+        test_files,
+        store,
+        verbose,
+        skip_preflight,
+        skip_sweep,
+        no_strict_vars,
+        run_start,
+    )
+    if abort is not None:
+        return abort
 
     all_results = await _run_files(
         yaml_files, test_files, store, fail_fast, verbose, skip_cleanup, no_strict_vars
@@ -240,6 +216,68 @@ async def _run_tests_locked(
         preflight_count=preflight_count,
         sweep_count=sweep_count,
     )
+
+
+def _abort_fields(
+    phase: str, outcome: PhaseOutcome, failed: TestResult, run_start: float
+) -> dict[str, object]:
+    """``RunResult`` fields describing a gate-phase abort. ``phase`` names the block.
+
+    Both gates report through the same shape (``<phase>_count`` / ``_failed`` /
+    ``_failed_name`` / ``_diagnostics`` / ``_error``), so one builder serves both.
+    """
+    return {
+        "duration_ms": (time.monotonic() - run_start) * 1000,
+        f"{phase}_count": outcome.count,
+        f"{phase}_failed": True,
+        f"{phase}_failed_name": outcome.failed_name,
+        f"{phase}_diagnostics": failed.diagnostics,
+        f"{phase}_error": failed.error,
+    }
+
+
+async def _run_gate_phases(
+    ctx: _RunContext,
+    yaml_files: list[Path],
+    test_files: list[TestFile],
+    store: VariableStore,
+    verbose: bool,
+    skip_preflight: bool,
+    skip_sweep: bool,
+    no_strict_vars: bool,
+    run_start: float,
+) -> tuple[int, int, RunResult | None]:
+    """Run the two gate phases that precede every group.
+
+    Preflight is read-only dependency-health probing; sweep is the declared
+    pattern-based cleanup of prior-run artifacts. Either one failing aborts the
+    run before a single group executes: an unhealthy dependency makes every
+    verdict meaningless, and creating fixtures into an unswept environment is
+    how cross-run collisions are born.
+
+    Returns ``(preflight_count, sweep_count, abort_result)`` — the third element
+    is a complete ``RunResult`` when a gate failed, otherwise None.
+    """
+    preflight_count = 0
+    if not skip_preflight:
+        outcome = await run_preflight(yaml_files, test_files, store, verbose, no_strict_vars)
+        if outcome is not None:
+            preflight_count = outcome.count
+            if outcome.failed_result is not None:
+                fields = _abort_fields("preflight", outcome, outcome.failed_result, run_start)
+                return preflight_count, 0, ctx.result(store, **fields)
+
+    sweep_count = 0
+    if not skip_sweep:
+        outcome = await run_sweep(yaml_files, test_files, store, verbose, no_strict_vars)
+        if outcome is not None:
+            sweep_count = outcome.count
+            if outcome.failed_result is not None:
+                fields = _abort_fields("sweep", outcome, outcome.failed_result, run_start)
+                fields["preflight_count"] = preflight_count
+                return preflight_count, sweep_count, ctx.result(store, **fields)
+
+    return preflight_count, sweep_count, None
 
 
 async def _run_files(
@@ -320,16 +358,7 @@ async def _run_group_tests(
         auth_error = unknown_auth_profile_error(test, test_file)
         if auth_error:
             logger.error("unknown_auth_profile", test_id=test.id, error=auth_error)
-            results.append(
-                TestResult(
-                    test_id=test.id,
-                    test_name=test.name,
-                    group_name=group_name,
-                    passed=False,
-                    error=auth_error,
-                    file_stem=path.stem,
-                )
-            )
+            results.append(error_result(test, group_name, path.stem, auth_error))
             if fail_fast and not force_run_cleanup:
                 logger.warning("fail_fast_triggered", test_id=test.id)
                 aborted = True
@@ -339,14 +368,7 @@ async def _run_group_tests(
         if runner is None:
             effective_type = test.runner or test_file.meta.runner
             results.append(
-                TestResult(
-                    test_id=test.id,
-                    test_name=test.name,
-                    group_name=group_name,
-                    passed=False,
-                    error=f"Unsupported runner: {effective_type}",
-                    file_stem=path.stem,
-                )
+                error_result(test, group_name, path.stem, f"Unsupported runner: {effective_type}")
             )
             continue
 

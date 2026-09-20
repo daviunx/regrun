@@ -24,7 +24,24 @@ from regrun.runners.base import RunnerResponse
 
 logger = structlog.get_logger()
 
-__all__ = ["execute_single_test"]
+__all__ = ["error_result", "execute_single_test"]
+
+
+def error_result(test: Test, group_name: str, file_stem: str, error: str) -> TestResult:
+    """A test that could not be executed at all: a suite defect, not a verdict.
+
+    Used for the pre-execution guards (an auth profile this file never declared,
+    an unsupported runner type). ``error`` is counted separately from ``failed``
+    so a suite defect is never read as a product regression.
+    """
+    return TestResult(
+        test_id=test.id,
+        test_name=test.name,
+        group_name=group_name,
+        passed=False,
+        error=error,
+        file_stem=file_stem,
+    )
 
 
 async def execute_single_test(
