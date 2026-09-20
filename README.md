@@ -653,6 +653,8 @@ Each entry under `json_path:` maps a JSONPath expression to one operator:
 
 Note: numeric operators (`gt`, `gte`, `lt`, `lte`) are the correct names. `greater_than`, `less_than`, `>=`, and `<=` are not valid.
 
+One path may carry several operators (`"$.slug": { not_empty: true, starts_with: "myapp-" }`). Every operator is evaluated and reported separately, and the test passes only when all of them pass (AND). An unrecognised key under a path fails the test rather than being ignored.
+
 ### Response normalization (fastmcp runner)
 
 Assertions and captures run against the **normalized** tool response body, not the raw MCP payload. Know the shape before writing `json_path`:

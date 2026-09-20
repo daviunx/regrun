@@ -196,6 +196,8 @@ Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, el
 | `matches` | `{ matches: "^[a-z]+$" }` | Regex search (`re.search`) |
 | `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when NO value matched by the path equals the expected value (all matches, string-coerced). Empty/missing match set passes. Use for isolation checks — assert a forbidden value is absent regardless of how many results return |
 
+Several operators may sit under one path (`"$.slug": { not_empty: true, starts_with: "myapp-" }`). All of them are evaluated, each reported on its own line, and the test passes only when every one passes (AND). An unrecognised key under a path fails the test instead of being ignored.
+
 ### Required assertions by operation
 
 | Operation | Required assertions |
