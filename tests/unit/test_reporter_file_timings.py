@@ -17,6 +17,8 @@ Contract:
 
 import json
 
+import pytest
+
 from regrun.engine.reporter import (
     BudgetBreach,
     RunResult,
@@ -76,8 +78,16 @@ def test_share_is_the_fraction_of_total_duration() -> None:
 
 
 def test_shares_sum_to_one() -> None:
+    """The shares account for the whole run, to float tolerance.
+
+    ``sum()`` compensates for floating-point error from Python 3.12 but adds
+    left to right before it, so 0.6 + 0.3 + 0.1 totals 1.0 on one interpreter
+    and 0.9999999999999999 on another. The table's guarantee is that no time is
+    unaccounted for, not that a binary float lands on a decimal exactly, so the
+    tolerance belongs here rather than as rounding in the implementation.
+    """
     rows = build_file_timings(_results())
-    assert sum(row.share for row in rows) == 1.0
+    assert sum(row.share for row in rows) == pytest.approx(1.0)
 
 
 def test_empty_run_yields_no_timing_rows() -> None:
