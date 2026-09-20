@@ -1,4 +1,4 @@
-# regrun — Agent Reference
+# regrun Agent Reference
 
 > YAML-driven regression test runner for APIs, MCP servers, and WebSocket streams.
 > Read this before writing or running regression tests.
@@ -25,9 +25,9 @@ meta:
   layer: api            # setup | api | mcp | chat
   runner: httpx         # httpx | fastmcp | bash | websocket
   endpoint: "http://localhost:8000"
-  mcp_endpoint: "http://localhost:8001"   # optional — fastmcp runner only
-  default_auth: prod    # optional — applies to all tests in file
-  env_file: ".env.test" # optional — relative to the test file's directory
+  mcp_endpoint: "http://localhost:8001"   # optional, fastmcp runner only
+  default_auth: prod    # optional, applies to all tests in file
+  env_file: ".env.test" # optional, relative to the test file's directory
 
 variables:
   RUN_ID: "{{timestamp}}"
@@ -97,7 +97,7 @@ groups:
       "$[0].status": { equals: "open" }
 ```
 
-`json_path` asserts (and captures) run against the **normalized** body — an envelope's `data` is hoisted to top level (never `$.data.*`), and a plain-string error body is exposed as `$._raw_text`. See README "Response normalization".
+`json_path` asserts (and captures) run against the **normalized** body: an envelope's `data` is hoisted to top level (never `$.data.*`), and a plain-string error body is exposed as `$._raw_text`. See README "Response normalization".
 
 ### bash
 
@@ -135,7 +135,7 @@ groups:
     contains: "0"
 ```
 
-Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, else `psql {fallback_dsn}`); every call carries `-v ON_ERROR_STOP=1 -q -t -A` and the statement on stdin. Connection values are Jinja-renderable — keep the product-prefixed env convention, no new `REGRUN_SQL_*` vars. **SQL only** — app-command exec + OpenSearch curl steps stay `runner: bash`. `runner: sql` hard-fails to parse on a pre-0.8.0 binary; adopt only after the CI pin is ≥ 0.8.0.
+Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, else `psql {fallback_dsn}`); every call carries `-v ON_ERROR_STOP=1 -q -t -A` and the statement on stdin. Connection values are Jinja-renderable, so keep the product-prefixed env convention, no new `REGRUN_SQL_*` vars. **SQL only**: app-command exec + OpenSearch curl steps stay `runner: bash`. `runner: sql` hard-fails to parse on a pre-0.8.0 binary; adopt only after the CI pin is ≥ 0.8.0.
 
 ### websocket
 
@@ -194,7 +194,7 @@ Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, el
 | `lte` | `{ lte: 99 }` | Numeric less-than-or-equal |
 | `starts_with` | `{ starts_with: "ntk_" }` | String prefix |
 | `matches` | `{ matches: "^[a-z]+$" }` | Regex search (`re.search`) |
-| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when NO value matched by the path equals the expected value (all matches, string-coerced). Empty/missing match set passes. Use for isolation checks — assert a forbidden value is absent regardless of how many results return |
+| `not_contains` | `"$.results[*].id": { not_contains: "{{FORBIDDEN_ID}}" }` | Array exclusion: passes when NO value matched by the path equals the expected value (all matches, string-coerced). Empty/missing match set passes. Use for isolation checks: assert a forbidden value is absent regardless of how many results return |
 
 ### Required assertions by operation
 
@@ -202,7 +202,7 @@ Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, el
 |-----------|---------------------|
 | POST (create) | `status: 201` + json_path for created ID |
 | GET (read) | `status: 200` + json_path for expected field |
-| GET (list) | `status: 200` (count may vary — do not assert exact length) |
+| GET (list) | `status: 200` (count may vary, do not assert exact length) |
 | PUT/PATCH | `status: 200` + json_path for changed field |
 | DELETE | `status: 204` or `status: [200, 204]` |
 | MCP tool | `is_error: false` + at least one json_path |
@@ -222,14 +222,14 @@ Docker-probe dispatch is automatic (`docker exec … psql` when docker is up, el
 | `{{uuid}}` | UUID4 string | `550e8400-e29b-41d4-a716-446655440000` |
 | `{{env.VAR_NAME}}` | Environment variable value | value of `$VAR_NAME` |
 
-Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`) but do not crash — the template string is returned as-is.
+Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`) but do not crash; the template string is returned as-is.
 
 ### Variable rules
 
 - Variables declared in `variables:` are only set if the key does not already exist in the store. This prevents downstream files from overwriting setup captures.
 - `capture:` uses JSONPath to extract values from the response body into the store.
 - For bash tests, `capture: { VAR: stdout }` captures the entire stripped stdout; `capture: { VAR: "$.field" }` parses stdout as JSON first.
-- Captured variables propagate cross-file — a JWT captured in `00_setup.yaml` is available in all subsequent files without re-declaration.
+- Captured variables propagate cross-file: a JWT captured in `00_setup.yaml` is available in all subsequent files without re-declaration.
 - Always suffix resource names with `{{RUN_ID}}` to prevent collisions across parallel runs.
 
 ---
@@ -244,8 +244,8 @@ Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`
 | Suppress org header for one test | Test uses default auth but endpoint rejects X-Org-Slug | `org_header: false` on that test |
 
 **Auth types:**
-- `bearer` — sets `Authorization: Bearer <token>`
-- `api_key` — sets `X-API-Key: <token>`
+- `bearer` sets `Authorization: Bearer <token>`
+- `api_key` sets `X-API-Key: <token>`
 
 `org_header` in an auth config sets `X-Org-Slug`. Setting `org_header: false` on the test suppresses it even when the auth config has it set.
 
@@ -253,39 +253,39 @@ Full Jinja2 syntax is supported. Undefined variables warn (via `StrictUndefined`
 
 ## Gotchas
 
-- **`auth: none` is a string literal** — writing `auth:` with no value parses as YAML null and causes a runner error. Always write `auth: none` explicitly.
+- **`auth: none` is a string literal**: writing `auth:` with no value parses as YAML null and causes a runner error. Always write `auth: none` explicitly.
 
-- **Per-test `runner:` override is only for setup files** — setup files mix runners (bash for DB, httpx for auth). Pure `api` or `mcp` files should not use per-test runner overrides; the file's `meta.runner` applies to all tests.
+- **Per-test `runner:` override is only for setup files**: setup files mix runners (bash for DB, httpx for auth). Pure `api` or `mcp` files should not use per-test runner overrides; the file's `meta.runner` applies to all tests.
 
-- **`org_header: false` on auth endpoints** — login, register, and org-creation endpoints are bare-domain requests. Omitting `org_header: false` causes the runner to send `X-Org-Slug`, which produces 400 errors.
+- **`org_header: false` on auth endpoints**: login, register, and org-creation endpoints are bare-domain requests. Omitting `org_header: false` causes the runner to send `X-Org-Slug`, which produces 400 errors.
 
-- **Cross-file variable propagation** — variables captured in `00_setup.yaml` (e.g. `PROD_JWT`) are available in `01_api_surface.yaml` without re-declaration. The store skips keys already present, so order of declaration is safe.
+- **Cross-file variable propagation**: variables captured in `00_setup.yaml` (e.g. `PROD_JWT`) are available in `01_api_surface.yaml` without re-declaration. The store skips keys already present, so order of declaration is safe.
 
-- **Bash commands run from CWD** — the BashRunner sets `cwd` to `Path.cwd()` (the directory where `regrun` is invoked). Use absolute paths or `docker exec` rather than paths relative to the test file.
+- **Bash commands run from CWD**: the BashRunner sets `cwd` to `Path.cwd()` (the directory where `regrun` is invoked). Use absolute paths or `docker exec` rather than paths relative to the test file.
 
-- **Numeric operators are `gt`, `gte`, `lt`, `lte`** — not `greater_than`, `less_than`, or `>=`. Using the wrong form silently skips the assertion.
+- **Numeric operators are `gt`, `gte`, `lt`, `lte`**, not `greater_than`, `less_than`, or `>=`. Using the wrong form silently skips the assertion.
 
-- **`default_auth` covers all tests in the file** — only add an explicit `auth:` field to tests that need different auth than the default. Repeating the default auth on every test is unnecessary and creates noise.
+- **`default_auth` covers all tests in the file**: only add an explicit `auth:` field to tests that need different auth than the default. Repeating the default auth on every test is unnecessary and creates noise.
 
-- **Never re-declare `RUN_ID` in api or mcp files** — `RUN_ID` is set once in `00_setup.yaml` via `{{timestamp}}`. Re-declaring it in downstream files overwrites the value mid-run, breaking resource naming consistency.
+- **Never re-declare `RUN_ID` in api or mcp files**: `RUN_ID` is set once in `00_setup.yaml` via `{{timestamp}}`. Re-declaring it in downstream files overwrites the value mid-run, breaking resource naming consistency.
 
-- **`env_file` path is relative to the test file** — not to CWD or the runner. The runner resolves it as `test_file_directory / env_file`.
+- **`env_file` path is relative to the test file**, not to CWD or the runner. The runner resolves it as `test_file_directory / env_file`.
 
-- **WebSocket: never assert exact LLM text** — `$.response_text` is non-deterministic. Use `not_empty: true` and assert structure (e.g. `$.event_count` with `gt: 1`). Never use `equals` or `contains` on `$.response_text`.
+- **WebSocket: never assert exact LLM text**: `$.response_text` is non-deterministic. Use `not_empty: true` and assert structure (e.g. `$.event_count` with `gt: 1`). Never use `equals` or `contains` on `$.response_text`.
 
-- **`status` accepts a list** — `status: [200, 201]` matches either code. Use for endpoints that may return different success codes depending on whether a resource was created or already existed.
+- **`status` accepts a list**: `status: [200, 201]` matches either code. Use for endpoints that may return different success codes depending on whether a resource was created or already existed.
 
-- **`capture:` on bash uses per-command, not per-test** — place `capture:` inside each `commands` list item, not at the test level. Test-level `capture:` is for httpx/fastmcp JSONPath extraction from the response body.
+- **`capture:` on bash uses per-command, not per-test**: place `capture:` inside each `commands` list item, not at the test level. Test-level `capture:` is for httpx/fastmcp JSONPath extraction from the response body.
 
-- **`meta.product` is for reporting only** — it does not need to match any registry or config file. Use a meaningful name for log output and CI summaries.
+- **`meta.product` is for reporting only**: it does not need to match any registry or config file. Use a meaningful name for log output and CI summaries.
 
-- **`--group` and `--priority` do not filter auto-included setup files** — when setup runs as a dependency (you did not pass `--layer setup`), it runs in full. Filters apply to setup only when explicitly targeted via `--layer setup`. `--skip-setup` still excludes setup entirely.
+- **`--group` and `--priority` do not filter auto-included setup files**: when setup runs as a dependency (you did not pass `--layer setup`), it runs in full. Filters apply to setup only when explicitly targeted via `--layer setup`. `--skip-setup` still excludes setup entirely.
 
-- **`cleanup: true` groups are the teardown mirror of setup** — a cleanup-flagged group survives `--group`/`--priority` filters AND still runs when `--fail-fast` aborts (in the failing file and later files), so filtered/aborted iteration runs still sweep the environment. The run's exit code still reflects the original failure. `--skip-cleanup` suppresses them. **Only flag capture-independent, pattern-based sweeps** (`slug LIKE 'regr-%'` + OpenSearch `_delete_by_query`) — never capture-dependent tail deletes (those false-red in filtered runs; the next run's start-of-run sweep covers their leaks). `regrun lint` W005 flags a cleanup group that references a variable captured elsewhere.
+- **`cleanup: true` groups are the teardown mirror of setup**: a cleanup-flagged group survives `--group`/`--priority` filters AND still runs when `--fail-fast` aborts (in the failing file and later files), so filtered/aborted iteration runs still sweep the environment. The run's exit code still reflects the original failure. `--skip-cleanup` suppresses them. **Only flag capture-independent, pattern-based sweeps** (`slug LIKE 'regr-%'` + OpenSearch `_delete_by_query`), never capture-dependent tail deletes (those false-red in filtered runs; the next run's start-of-run sweep covers their leaks). `regrun lint` W005 flags a cleanup group that references a variable captured elsewhere.
 
-- **Sweep-first, not cleanup-last** — within-run cleanup can never be guaranteed (SIGKILL / crashed run defeats any teardown). The only guaranteed cleanup is the pattern-based sweep at the START of the next run. Every suite must open (in `00_setup`, after auth) with a self-healing sweep that deletes all prior-run artifacts of every fixture family, across BOTH Postgres and OpenSearch, followed by a preflight group asserting zero leftovers + quota headroom.
+- **Sweep-first, not cleanup-last**: within-run cleanup can never be guaranteed (SIGKILL / crashed run defeats any teardown). The only guaranteed cleanup is the pattern-based sweep at the START of the next run. Every suite must open (in `00_setup`, after auth) with a self-healing sweep that deletes all prior-run artifacts of every fixture family, across BOTH Postgres and OpenSearch, followed by a preflight group asserting zero leftovers + quota headroom.
 
-- **Budget floor ≥75s** — indexing/async `eventually:` poll ceilings must be ≥75s under load. `regrun lint` W003 flags under-budgeted polls (ceiling = `initial_delay + interval·Σ backoff^k`, k=0..max_attempts-2).
+- **Budget floor ≥75s**: indexing/async `eventually:` poll ceilings must be ≥75s under load. `regrun lint` W003 flags under-budgeted polls (ceiling = `initial_delay + interval·Σ backoff^k`, k=0..max_attempts-2).
 
 ---
 
@@ -307,8 +307,8 @@ regrun run tests/regression/ --group 1,2,3
 # Preview test plan without executing
 regrun run tests/regression/ --dry-run
 
-# Verbose output (request/response bodies in logs for ALL tests; rarely needed —
-# failures are always fully explained by default, see "Failure diagnostics" below)
+# Verbose output (request/response bodies in logs for ALL tests; rarely needed,
+# since failures are always fully explained by default, see "Failure diagnostics" below)
 regrun run tests/regression/ --verbose
 
 # Stop on first failure
@@ -344,17 +344,17 @@ preflight:
 
 ### Run lock
 
-Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock`. A second concurrent run for the same product **exits code 2** naming the product + lock path. flock self-releases on process death (incl. SIGKILL) — no stale-lock protocol. `--no-lock` bypasses. `REGRUN_RUNS_DIR` must be local (flock is unreliable over NFS).
+Every run holds an exclusive `fcntl.flock` on `{REGRUN_RUNS_DIR|~/.regrun/runs}/{product}/.lock`. A second concurrent run for the same product **exits code 2** naming the product + lock path. flock self-releases on process death (incl. SIGKILL), so there is no stale-lock protocol. `--no-lock` bypasses. `REGRUN_RUNS_DIR` must be local (flock is unreliable over NFS).
 
 ## Failure Diagnostics (default) & Run Artifacts
 
-A failing test is fully explained on the FIRST run — no `--verbose`, no re-run. regrun prints a `Failures` section (between the results table and the summary) with the request echo, response status + body, every failed assertion at full length, and the `eventually` attempt count. `Result: PASS|FAIL` stays the last line. Auth headers and resolved token values are redacted; response bodies are truncated to 2000 chars (`REGRUN_DIAG_BODY_LIMIT`).
+A failing test is fully explained on the FIRST run: no `--verbose`, no re-run. regrun prints a `Failures` section (between the results table and the summary) with the request echo, response status + body, every failed assertion at full length, and the `eventually` attempt count. `Result: PASS|FAIL` stays the last line. Auth headers and resolved token values are redacted; response bodies are truncated to 2000 chars (`REGRUN_DIAG_BODY_LIMIT`).
 
-Every run also persists the complete report to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{timestamp}/report.txt` + `report.json`, and stdout ends with `Full report: <path>/report.txt (json: report.json)`. **Read that file instead of re-running the suite** to inspect a failure — `--output json`'s `diagnostics` field carries the same data.
+Every run also persists the complete report to `{REGRUN_RUNS_DIR or ~/.regrun/runs}/{product}/{timestamp}/report.txt` + `report.json`, and stdout ends with `Full report: <path>/report.txt (json: report.json)`. **Read that file instead of re-running the suite** to inspect a failure; `--output json`'s `diagnostics` field carries the same data.
 
 ## Linting a Suite
 
-Static analysis — no network, no execution. Run before committing suite changes.
+Static analysis: no network, no execution. Run before committing suite changes.
 
 ```bash
 # Lint (exit 1 on any error rule)
@@ -373,7 +373,7 @@ regrun lint tests/regression/ --budget-floor 90 --allow-positional '06_*.yaml'
 | E002 | error | mcp-layer file sorts after a `*cleanup*` file (shared api_key revoked) |
 | E003 | error | Test has `auth:` with a null value (the `auth: none` trap) |
 | W001 | warn | MCP tool test asserts `is_error` with no `json_path` |
-| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`) — suppress with inline `# lint: allow-positional` or `--allow-positional GLOB` |
+| W002 | warn | `equals`/`contains` on a positional array path (`[0]`/`[*]`): suppress with inline `# lint: allow-positional` or `--allow-positional GLOB` |
 | W003 | warn | `eventually:` ceiling below the budget floor (default 75s) |
 | W004 | warn | POST/create-shaped test with no `{{RUN_ID}}`/`{{timestamp}}` (4xx tests skipped) |
 | W005 | warn | Cleanup-flagged group references a variable captured in another group |
@@ -390,8 +390,8 @@ REGRUN_MCP_ENDPOINT=http://mcp:8000 regrun run tests/regression/
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `REGRUN_API_ENDPOINT` | — | Overrides `meta.endpoint` in all files |
-| `REGRUN_MCP_ENDPOINT` | — | Overrides `meta.mcp_endpoint` in all files |
+| `REGRUN_API_ENDPOINT` | (none) | Overrides `meta.endpoint` in all files |
+| `REGRUN_MCP_ENDPOINT` | (none) | Overrides `meta.mcp_endpoint` in all files |
 | `REGRUN_TIMEOUT` | 30 | HTTP per-test timeout (seconds) |
 | `REGRUN_MCP_TIMEOUT` | 60 | MCP per-test timeout (seconds) |
 | `REGRUN_WS_TIMEOUT` | 30 | WebSocket default timeout (seconds) |
@@ -405,14 +405,14 @@ REGRUN_MCP_ENDPOINT=http://mcp:8000 regrun run tests/regression/
 
 ```
 tests/regression/
-  00_setup.yaml          # layer: setup — auth, seed data, health checks
-  01_api_surface.yaml    # layer: api   — REST endpoint tests
-  02_mcp_surface.yaml    # layer: mcp   — MCP tool tests
-  03_chat_surface.yaml   # layer: chat  — WebSocket streaming tests
+  00_setup.yaml          # layer: setup (auth, seed data, health checks)
+  01_api_surface.yaml    # layer: api   (REST endpoint tests)
+  02_mcp_surface.yaml    # layer: mcp   (MCP tool tests)
+  03_chat_surface.yaml   # layer: chat  (WebSocket streaming tests)
 ```
 
 - Pass the directory path directly: `regrun run tests/regression/` or `regrun run ./my-tests/`.
 - Files are sorted alphabetically; setup files (`layer: setup`) always run first regardless of name.
 - One layer per file, except setup files which may mix runners via per-test `runner:` overrides.
 - Numeric prefixes (`00_`, `01_`) determine execution order within the same layer.
-- `meta.product` is used for reporting and log labels only — no config file lookup is performed.
+- `meta.product` is used for reporting and log labels only; no config file lookup is performed.
