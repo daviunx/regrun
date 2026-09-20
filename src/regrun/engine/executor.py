@@ -22,8 +22,9 @@ from pathlib import Path
 
 import structlog
 
+from regrun.engine import budgets
 from regrun.engine.blocked import BlockedTracker, blocked_result, file_failed, skipped_result
-from regrun.engine.depgraph import FileNode, Graph, build, closure
+from regrun.engine.depgraph import build, closure
 from regrun.engine.phases import (
     PhaseOutcome,
     effective_strict,
@@ -38,6 +39,7 @@ from regrun.engine.run_lock import (
     derive_lock_target,
     release_run_lock,
 )
+from regrun.engine.selection import file_nodes
 from regrun.engine.runner_factory import (
     AUTH_CONSUMING_RUNNERS,
     Runner,
@@ -82,6 +84,7 @@ async def run_tests(
     no_lock: bool = False,
     no_strict_vars: bool = False,
     skip_sweep: bool = False,
+    budget_seconds: float | None = None,
 ) -> RunResult:
     """Execute all tests across all files and collect results.
 
@@ -124,6 +127,7 @@ async def run_tests(
             no_strict_vars,
             skip_sweep,
             target,
+            budget_seconds,
         )
     finally:
         release_run_lock(lock_fd)
@@ -179,6 +183,7 @@ async def _run_tests_locked(
     no_strict_vars: bool = False,
     skip_sweep: bool = False,
     target: str = "default",
+    budget_seconds: float | None = None,
 ) -> RunResult:
     """Run body, executed while the per-product lock is held (see ``run_tests``)."""
     store = VariableStore()
@@ -205,6 +210,12 @@ async def _run_tests_locked(
         yaml_files, test_files, store, fail_fast, verbose, skip_cleanup, no_strict_vars
     )
 
+    run_duration_ms = (time.monotonic() - run_start) * 1000
+    file_timings = build_file_timings(all_results)
+    breaches = budgets.evaluate(
+        _file_budgets(yaml_files, test_files), file_timings, run_duration_ms, budget_seconds
+    )
+
     return ctx.result(
         store,
         total=len(all_results),
@@ -213,12 +224,22 @@ async def _run_tests_locked(
         skipped=sum(1 for r in all_results if r.skipped),
         blocked=sum(1 for r in all_results if r.blocked_by),
         errors=sum(1 for r in all_results if r.error),
-        duration_ms=(time.monotonic() - run_start) * 1000,
+        duration_ms=run_duration_ms,
         test_results=all_results,
-        file_timings=build_file_timings(all_results),
+        file_timings=file_timings,
+        budget_breaches=breaches,
         preflight_count=preflight_count,
         sweep_count=sweep_count,
     )
+
+
+def _file_budgets(yaml_files: list[Path], test_files: list[TestFile]) -> dict[str, float]:
+    """The declared per-file time budgets, keyed by file stem. Undeclared files are absent."""
+    return {
+        path.stem: tf.meta.budget_seconds
+        for path, tf in zip(yaml_files, test_files)
+        if tf.meta.budget_seconds is not None
+    }
 
 
 def _abort_fields(
@@ -283,29 +304,6 @@ async def _run_gate_phases(
     return preflight_count, sweep_count, None
 
 
-def _build_graph(yaml_files: list[Path], test_files: list[TestFile]) -> Graph:
-    """Build the dependency graph over the files THIS run loaded.
-
-    ``requires:`` entries naming a file the run did not load are dropped: a
-    filtered run (``--layer``, ``--group``, ``--file``) cannot judge a producer it
-    never executed, and must not die because of it. A self-reference is dropped
-    for the same reason. Both are suite defects, and the linter's E005 is the
-    loud gate for them.
-    """
-    stems = {path.stem for path in yaml_files}
-    nodes = [
-        FileNode(
-            stem=path.stem,
-            layer=tf.meta.layer,
-            requires=[r for r in tf.meta.requires if r in stems and r != path.stem],
-            serial=tf.meta.serial,
-            test_count=sum(len(group.tests) for group in tf.groups),
-        )
-        for path, tf in zip(yaml_files, test_files)
-    ]
-    return build(nodes)
-
-
 def _blocked_group(group: Group, file_stem: str, blocker: str) -> list[TestResult]:
     """Blocked results for every test in a group that was not executed."""
     return [
@@ -335,7 +333,7 @@ async def _run_files(
     tests are reported BLOCKED naming the blocker, so one broken producer yields
     one failure to read instead of a cascade. Its cleanup groups still run.
     """
-    graph = _build_graph(yaml_files, test_files)
+    graph = build(file_nodes(yaml_files, test_files))
     tracker = BlockedTracker()
     all_results: list[TestResult] = []
     aborted = False

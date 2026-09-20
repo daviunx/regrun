@@ -9,7 +9,7 @@ import structlog
 
 from regrun import cli_output
 from regrun.config import settings
-from regrun.engine import executor, selection
+from regrun.engine import executor, selection, shardplan
 from regrun.engine.linter import format_lint_report, lint_directory, lint_exit_code
 from regrun.engine.reporter import RunResult
 from regrun.engine.selection import CONFIG_FILENAME
@@ -52,6 +52,7 @@ def _execute(
     no_lock: bool,
     no_strict_vars: bool,
     skip_sweep: bool,
+    budget_seconds: float | None,
 ) -> RunResult:
     """Run the plan (per-product lock held for the duration unless --no-lock)."""
     try:
@@ -66,6 +67,7 @@ def _execute(
                 no_lock,
                 no_strict_vars,
                 skip_sweep,
+                budget_seconds,
             )
         )
     except executor.RunLockError as e:
@@ -142,6 +144,38 @@ def _execute(
     default=False,
     help="Do not fail tests on unresolved {{VAR}} templates (render as literal, warn)",
 )
+@click.option(
+    "--file",
+    "file_patterns",
+    multiple=True,
+    help=(
+        "Run only this file stem or glob (repeatable). The setup layer and every "
+        "file the selection requires are pulled in automatically"
+    ),
+)
+@click.option(
+    "--rerun-failed",
+    is_flag=True,
+    default=False,
+    help=(
+        "Run only the files that failed or were blocked in the latest report for "
+        "this product and target (plus setup); exits 0 when there is nothing to re-run"
+    ),
+)
+@click.option(
+    "--shard",
+    default=None,
+    help=(
+        "Run shard k of n (e.g. 1/3). Each shard REQUIRES a disjoint environment "
+        "(its own database and index prefix); regrun cannot verify that"
+    ),
+)
+@click.option(
+    "--budget-seconds",
+    type=float,
+    default=None,
+    help="Fail the run when its wall time exceeds this many seconds",
+)
 def run(
     target: str,
     layer: str | None,
@@ -157,6 +191,10 @@ def run(
     skip_sweep: bool,
     no_lock: bool,
     no_strict_vars: bool,
+    file_patterns: tuple[str, ...],
+    rerun_failed: bool,
+    shard: str | None,
+    budget_seconds: float | None,
 ) -> None:
     """Run regression tests.
 
@@ -166,16 +204,78 @@ def run(
     verbose = verbose or settings.verbose
     _configure_logging(verbose)
 
-    plan = selection.build_run_plan(target, layer, group_str, priority, skip_setup, skip_cleanup)
+    plan = _plan(
+        target,
+        layer,
+        group_str,
+        priority,
+        skip_setup,
+        skip_cleanup,
+        file_patterns,
+        rerun_failed,
+        shard,
+    )
+    if plan is None:
+        return
+    for note in plan.notes:
+        click.echo(note)
 
     if dry_run:
         cli_output.print_dry_run(plan.paths, plan.test_files)
         return
 
     result = _execute(
-        plan, fail_fast, verbose, skip_cleanup, skip_preflight, no_lock, no_strict_vars, skip_sweep
+        plan,
+        fail_fast,
+        verbose,
+        skip_cleanup,
+        skip_preflight,
+        no_lock,
+        no_strict_vars,
+        skip_sweep,
+        budget_seconds,
     )
+    _report_and_exit(result, output_format)
 
+
+def _plan(
+    target: str,
+    layer: str | None,
+    group_str: str | None,
+    priority: str | None,
+    skip_setup: bool,
+    skip_cleanup: bool,
+    file_patterns: tuple[str, ...],
+    rerun_failed: bool,
+    shard: str | None,
+) -> selection.RunPlan | None:
+    """The plan to run, or None when the selection is legitimately empty.
+
+    An empty selection is not a failure: ``--rerun-failed`` after a green run has
+    nothing to re-run, which is the answer the operator asked for. The reason is
+    echoed and the caller returns without running anything.
+    """
+    try:
+        return selection.build_run_plan(
+            target,
+            layer,
+            group_str,
+            priority,
+            skip_setup,
+            skip_cleanup,
+            file_patterns,
+            rerun_failed,
+            shard,
+        )
+    except selection.NothingSelected as e:
+        click.echo(str(e))
+        return None
+    except shardplan.ShardSpecError as e:
+        raise click.ClickException(str(e)) from e
+
+
+def _report_and_exit(result: RunResult, output_format: str) -> None:
+    """Emit the report and exit with the verdict's code."""
     # Preflight / sweep failure: instant abort before any group ran.
     if result.preflight_failed:
         cli_output.print_phase_abort(
@@ -193,8 +293,9 @@ def run(
 
     cli_output.emit_and_persist(result, output_format)
 
-    # Exit with non-zero if any failures
-    if result.failed > 0 or result.errors > 0:
+    # A breached budget is a red run in its own right: the tests may all have
+    # passed, but a suite nobody is willing to wait for stops being run.
+    if result.failed > 0 or result.errors > 0 or result.budget_breaches:
         sys.exit(1)
 
 
