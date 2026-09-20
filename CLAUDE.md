@@ -11,7 +11,10 @@ Deterministic YAML-driven regression test runner for APIs, MCP servers, SQL, bas
 | Folder | What |
 |--------|------|
 | `src/regrun/cli.py` | CLI entrypoints — `run`, `lint` |
-| `src/regrun/engine/` | Execution core — executor, assertions, variables, retry, reporter, diagnostics, linter, run_lock, junit, artifacts |
+| `src/regrun/cli_output.py` | Report printing and persistence for the `run` command |
+| `src/regrun/engine/` | Execution core: executor, selection, assertions, variables, retry, reporter, diagnostics, run_lock, junit, artifacts |
+| `src/regrun/engine/depgraph.py` · `shardplan.py` · `blocked.py` · `budgets.py` · `rerun.py` | File-isolation primitives: dependency graph, shard planning, BLOCKED results, time budgets, rerun selection |
+| `src/regrun/engine/linter.py` · `lint_rules/` | Lint coordinator + one module per rule family (`structure`, `auth`, `asserts`, `timing`, `fixtures`, `hosts`, `variables`) |
 | `src/regrun/runners/` | One module per runner — httpx, fastmcp, bash, sql, websocket (+ `mcp_response` normalization) |
 | `src/regrun/models.py` | Pydantic models for the YAML schema |
 | `tests/unit/` | Unit tests per engine/runner module |
@@ -73,6 +76,10 @@ Anyone can read this code, fork it, and open a PR against it; anyone who runs `p
 
 ## Gotchas
 
+- **A new lint rule goes in `lint_rules/<family>.py`, never in `linter.py`.** The coordinator only parses, builds the per-file context and dispatches the three registries (`TEST_RULES`, `FILE_RULES`, `DIRECTORY_RULES`). Registry ORDER is load-bearing: it fixes the order findings are emitted in, which several tests pin
+- **`TestMeta` forbids extra keys.** A new `meta:` key must be declared as a field in the same change that starts reading it, or every suite carrying it fails at load. Keys only external orchestration reads (`health_path`, `mcp_health_path`) are declared too, for exactly that reason
+- **Selection runs BEFORE the group filters** (`engine/selection.py`). A file pulled in only as a dependency keeps all of its groups; filtering it would drop the variables the selected file needs
+- **Sharding requires disjoint environments** (own database, own index prefix) and regrun cannot verify it. Never describe `--shard` as safe to run against one stack
 - **A release is the TAG, not the commit.** `.github/workflows/publish.yml` fires ONLY on `v*.*.*` tags — pushing `main` publishes NOTHING. A version bump sitting on main is not released
 - **The tag push is irreversible.** It lands on public pypi.org/project/regrun — a burned version can be yanked but NEVER reused. This is the one push in the fleet that stays operator-gated; the `main` push is free
 - **A green pipeline does not prove the upload landed.** Verify BOTH `gh run watch` green AND the live version from the PyPI JSON API

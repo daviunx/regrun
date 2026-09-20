@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-20
+
+File isolation: a suite file declares what it consumes, and the engine can then act on it. One file can be run and trusted, a red run costs one file's re-run instead of the whole suite, a broken producer yields one failure instead of a cascade, and a suite can be split across disjoint stacks.
+
+### Added
+
+- **`meta.requires:`** (list of file stems) declares the files a file consumes captured values from. The setup layer is the bootstrap contract every file already depends on and is never listed. One declaration drives all of the features below.
+- **BLOCKED**, a discriminated sub-kind of `skipped`. When a file fails, every file requiring it (directly or transitively) is not run and its tests report `BLOCKED` naming the blocker, in the text report, in `report.json` (`blocked_by`, plus a `blocked` count) and in JUnit (`<skipped message="blocked by ...">`). One broken producer now yields one actionable failure instead of a wall of red with a single cause. The exit code still tracks real failures and errors.
+- **`--file <stem-or-glob>`** (repeatable) runs only the matching files, automatically pulling the setup layer and the `requires` closure of each match, in the canonical order. A pattern matching nothing is an error, never a silent zero-file run. Composes with `--group` and `--skip-setup`; a file present only as a dependency keeps all of its groups, because narrowing groups must not drop the variables the selected file needs.
+- **`--rerun-failed`** re-runs only the files that failed, errored or were blocked in the latest report for this product and target, echoes the report it read, and exits 0 saying so when there is nothing to re-run. Resolution is target-scoped, so two isolates of one product never re-run each other's failures.
+- **`--shard k/n`** splits a suite into deterministic subsets: a file and its closure stay together, the setup layer runs in every shard, a `serial: true` file gets the last shard to itself, and the rest are packed greedily by weight (test count when no timings are supplied). `--dry-run --shard k/n` prints the plan so a pipeline author can diff subsets before wiring a matrix. **Each shard requires a disjoint environment (its own database and index prefix); regrun cannot verify this and the help text says so.**
+- **`meta.serial: true`** marks a file that asserts process-global behaviour (a rate limit, a global counter, a singleton lock) and therefore must never share a shard with unrelated traffic.
+- **Time budgets, off unless declared.** `meta.budget_seconds` per file and `--budget-seconds` per run. An overrun reds the run and the report names the file and the overrun, without reclassifying any test: the test passed, the budget did not.
+- **A per-file timing table** in the text report and `report.json` (`file_timings`: tests, duration, share of the run), so suite rot is visible where it starts instead of being inferred from a total.
+- **Lint rule W012** (warn) flags a file that uses a variable another suite file captures without declaring `meta.requires:` for it: coupling that holds only while the full suite runs in order, and breaks on a filtered run, a single-file re-run or a shard boundary. Cleared by declaring the dependency, by producing the value locally, or by the producer being a setup file. A warning on purpose, so an existing suite can adopt it without a red gate.
+- **Lint rule E005** (error) rejects a `meta.requires:` entry no run can satisfy: an unknown stem, the file itself, a cycle, or a file that runs after its dependent.
+
+### Changed
+
+- **Unknown `meta` keys are now rejected at load** (`extra="forbid"`, matching `Assertion` and `Test` since 0.9.0). A typo'd `require:` was previously accepted and silently ignored, leaving the file with no declared dependency, selection blind to the coupling, and nothing anywhere saying so. The keys only external orchestration reads (`health_path`, `mcp_health_path`) are declared fields, so a suite carrying them still parses. *No opt-out*: a rejected key is a defect, fix the key.
+- **`--skip-setup` now drops the setup layer whatever else was selected.** It previously took effect only when `--layer` was also given, so on its own it silently did nothing.
+
+### Internal
+
+- `executor.py`, `linter.py` and the `run` command were decomposed into focused modules (`engine/depgraph.py`, `engine/shardplan.py`, `engine/budgets.py`, `engine/rerun.py`, `engine/blocked.py`, `engine/selection.py`, `engine/lint_rules/`, `cli_output.py`) before any of the above was written. Behaviour-preserving, one commit at a time, full suite green between each.
+
 ## [0.9.1] - 2026-07-26
 
 ### Fixed — false-green door: dangling auth-profile references
