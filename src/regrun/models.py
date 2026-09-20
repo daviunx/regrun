@@ -25,9 +25,16 @@ class SqlConnection(BaseModel):
 
 
 class TestMeta(BaseModel):
-    """Top-level metadata for a test file."""
+    """Top-level metadata for a test file.
 
-    model_config = ConfigDict(strict=True)
+    ``extra="forbid"`` is load-bearing: a typo'd ``require:`` would otherwise be
+    accepted and silently ignored, and the file would run with no declared
+    dependency at all -- blocked-skip disabled, selection blind to the coupling,
+    nothing anywhere saying so. Every key a suite may carry is therefore a
+    declared field, including the ones only external orchestration reads.
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     product: str
     layer: Literal["api", "mcp", "setup", "chat"]
