@@ -164,9 +164,24 @@ artifacts:
 
 ## How It Works (Execution Model)
 
-**File ordering:** The setup layer always runs first. All other files run alphabetically by filename. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order.
+**File ordering:** One order governs the whole engine: **layer rank first** (`setup`, `api`, `mcp`, `chat`; an unrecognised layer runs last), **then the file's stem in byte order**. Numeric prefixes (`00_`, `01_`, `02_`) enforce the intended order. The runner, the `--file` and `--rerun-failed` selectors, the shard planner and the linter's ordering rules all read that one definition, so a plan, a report and a lint finding can never disagree about which file comes first.
+
+The stem is the filename without `.yaml`, and excluding the extension is deliberate: it is a constant that carries no ordering intent, and comparing it against real characters is what makes punctuated names surprising. Given two files in one layer:
+
+| Order | Why |
+|---|---|
+| `00_setup` before `00_setup-extra` | A name that is a prefix of another runs first, whatever the longer one continues with. A shell's `ls` disagrees, because it compares `.yaml` against `-extra` |
+| `00_setup-extra` before `00a_x` | `_` precedes `a` |
+| `00.b` before all of them | `.` precedes `_` and every letter |
+| `00A_x` before `00a_x` | Byte order, never case-folded: a suite's order must not depend on a locale |
+
+Names built from digits, letters and underscores are unaffected by any of this, which is what the numeric-prefix convention is for.
+
+> **Upgrading from 0.9.x can reorder files within a layer.** 0.9.x ordered by the full filename, extension included. The order moves for any pair whose stem is a byte-for-byte prefix of another stem that continues with a character sorting below `.` (a hyphen is the common one), so `00_setup` and `00_setup-extra` swap. Run `regrun run <dir> --dry-run` and read the file list before upgrading a pinned CI suite. Lint rule **E002** compares by the same key, so its verdict can flip for such a pair: a suite holding cleanup file `10_cleanup.yaml` next to mcp file `10_cleanup-extra.yaml` was not flagged before and is flagged now, correctly, because that mcp file does run after the cleanup file. Renaming either file clears it.
 
 **Setup dependency:** When you pass `--layer api` or `--layer mcp`, the setup file is auto-included and runs before the target layer. When setup runs as a dependency, `--group` and `--priority` filters are not applied to it — it always runs in full so captured variables stay available. Filters apply to setup only when it is the explicit target (`--layer setup`). Skip setup entirely with `--skip-setup` when variables are already populated from a prior run segment.
+
+**Selecting a setup file (`--file`):** The setup layer is ordered and single-homed: the first setup file owns the suite's `variables:` and `meta.env_file`, and any setup file after it may read them. So selecting a setup-layer file also runs **every setup file sorting before it** (plus their own `requires` closures). A setup file sorting *after* the selection is never pulled: nothing it produces can have existed when the selected file ran in a full suite, so needing it would be a suite defect rather than a dependency. Selecting the first setup file therefore runs that file alone, and `--skip-setup` still removes the whole layer, which makes a `--file` pattern that only matched setup files an error, never a silent zero-file run.
 
 **Cleanup dependency (sweep-first):** A group flagged `cleanup: true` is the mirror of the setup layer on the teardown side. It is always retained under `--group` / `--priority` filters (so filtered iteration runs still sweep), and it still **executes** when `--fail-fast` aborts the run — in the failing file and every later file — while all other remaining tests are skipped. The run's exit code still reflects the original failure. Suppress cleanup groups with `--skip-cleanup` when iterating locally. Because within-run cleanup can never be guaranteed (a SIGKILL or crashed run defeats any teardown), the durable pattern is a *pattern-based, capture-independent* sweep at the **start** of the run (in `00_setup`) that deletes all prior-run artifacts — the run that needs a clean environment is the one that sweeps it. Only such capture-independent sweeps should be flagged `cleanup: true`.
 
@@ -212,7 +227,7 @@ regrun run TEST_DIR [OPTIONS]
 | `--skip-sweep` | flag | false | Skip the declared `sweep:` block (use when iterating; leaks must be swept later) |
 | `--no-lock` | flag | false | Bypass the per-product run lock (allow a concurrent run for this product) |
 | `--no-strict-vars` | flag | false | Render an unresolved `{{VAR}}` as a literal and warn, instead of failing the test |
-| `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match |
+| `--file` | stem or glob (repeatable) | all | Run only the matching files, plus the setup layer and the `requires` closure of each match (a setup-layer match pulls the setup files sorting before it) |
 | `--rerun-failed` | flag | false | Run only the files that failed, errored or were blocked in the latest report for this product and target |
 | `--shard` | `k/n` | none | Run shard `k` of `n`. **Each shard requires its own database and index prefix** |
 | `--budget-seconds` | float | none | Fail the run when its wall time exceeds this many seconds |
@@ -244,6 +259,9 @@ regrun run tests/regression/ --file 11_search_e2e
 
 # Every file of one family (glob), repeatable
 regrun run tests/regression/ --file "02_mcp_*" --file 05_flows
+
+# One setup file, with the setup files that run before it
+regrun run tests/regression/ --file 00g_seed_directory
 
 # After a red run: re-run only what broke
 regrun run tests/regression/ --rerun-failed
@@ -940,7 +958,7 @@ tests/regression/
   03_chat_surface.yaml   # WebSocket / streaming tests
 ```
 
-Numeric prefixes control alphabetical sort order. The setup layer is always processed first regardless of filename, but `00_` makes the intent explicit and keeps directory listings readable.
+Numeric prefixes control the within-layer sort order (see **File ordering** above: layer rank, then the stem in byte order). The setup layer is always processed first whatever the names are, but `00_` makes the intent explicit and keeps directory listings readable.
 
 ---
 

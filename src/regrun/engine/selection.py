@@ -5,9 +5,9 @@ the ordered list of files with their surviving groups" lives here. The CLI
 command stays a thin shell over ``build_run_plan``; selection semantics (which
 files, in which order, with which groups) are testable without Click.
 
-The canonical run order is defined once, by ``discover_yaml_files``: layer rank
-(setup, api, mcp, chat) then filename. Every later consumer honours that order
-rather than deriving its own.
+The canonical run order is defined once, in ``engine/ordering.py``: layer rank
+(setup, api, mcp, chat) then stem. ``discover_yaml_files`` applies it, and every
+other consumer asks that same primitive rather than deriving its own.
 """
 
 import fnmatch
@@ -20,7 +20,8 @@ import yaml
 
 from regrun.config import settings
 from regrun.engine import artifacts, rerun, shardplan
-from regrun.engine.depgraph import LAYER_ORDER, FileNode, build, closure, detect_cycles
+from regrun.engine.depgraph import FileNode, build, detect_cycles, selection_closure
+from regrun.engine.ordering import LAYER_ORDER, run_order_key, within_layer_key
 from regrun.engine.run_lock import derive_lock_target
 from regrun.models import Group, TestFile
 
@@ -133,12 +134,13 @@ def discover_yaml_files(
     """Discover YAML test files in a directory, optionally filtered by layer.
 
     Setup files are always included as a dependency unless skip_setup=True.
-    Files are ordered: setup layer first, then alphabetically.
+    Files come back in the canonical run order (``ordering.run_order_key``):
+    layer rank, then stem. This is the order every later consumer honours.
     """
     if not test_dir.is_dir():
         raise click.ClickException(f"Test directory not found: {test_dir}")
 
-    yaml_files = sorted(test_dir.glob("*.yaml"))
+    yaml_files = sorted(test_dir.glob("*.yaml"), key=lambda path: within_layer_key(path.stem))
     if not yaml_files:
         raise click.ClickException(f"No YAML test files found in {test_dir}")
 
@@ -164,8 +166,8 @@ def discover_yaml_files(
     if skip_setup:
         file_layers = [(f, fl) for f, fl in file_layers if fl != "setup"]
 
-    # Sort: setup first, then alphabetically
-    file_layers.sort(key=lambda x: (LAYER_ORDER.get(x[1], 99), x[0].name))
+    # The canonical run order, from the engine's single ordering primitive.
+    file_layers.sort(key=lambda x: run_order_key(x[0].stem, x[1]))
 
     return [f for f, _ in file_layers]
 
@@ -336,11 +338,16 @@ def file_nodes(paths: list[Path], test_files: list[TestFile]) -> list[FileNode]:
 
 
 def _with_closure(nodes: list[FileNode], stems: set[str]) -> set[str]:
-    """``stems`` plus everything they transitively depend on (setup included)."""
+    """``stems`` plus everything that has to run for them (setup included).
+
+    A setup stem also pulls the setup files sorting before it, because the setup
+    layer is ordered and the first file owns the suite's variables. See
+    ``depgraph.selection_closure``.
+    """
     graph = build(nodes)
     selected = set(stems)
     for stem in stems:
-        selected |= closure(graph, stem)
+        selected |= selection_closure(graph, stem)
     return selected
 
 

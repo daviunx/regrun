@@ -10,6 +10,10 @@ Contract:
     every later file" is an executor clause, not a graph edge, so setup ordering
     never shows up as a graph cycle).
   * ``closure(graph, stem)`` is the TRANSITIVE dependency set of one stem.
+  * ``selection_closure(graph, stem)`` is what has to RUN for one stem to run
+    alone: its dependency closure, plus (for a ``layer: setup`` stem) every
+    setup file sorting before it, because the setup layer is ordered and the
+    earlier files own the suite's variables.
   * ``build`` rejects a ``requires:`` naming an unknown stem or the file itself.
   * ``detect_cycles(graph)`` REPORTS cycles (it does not raise) so the linter can
     render them as findings.
@@ -98,6 +102,98 @@ def test_multiple_setup_files_are_all_implicit_dependencies() -> None:
         ]
     )
     assert depgraph.closure(graph, "01_api") == {"00_setup", "00a_seed"}
+
+
+# ------------------------------------------------------------------- selection_closure
+
+
+def _setup_suite() -> list[depgraph.FileNode]:
+    """Three ordered setup files, one of them declaring a producer, plus one api file."""
+    return [
+        _node("00_setup", layer="setup"),
+        _node("00g_seed", layer="setup"),
+        _node("00z_last", layer="setup"),
+        _node("01_api"),
+    ]
+
+
+def test_selection_closure_of_a_setup_file_pulls_the_earlier_setup_files() -> None:
+    """A later setup file needs the earlier ones: they own the suite's variables."""
+    graph = depgraph.build(_setup_suite())
+    assert depgraph.selection_closure(graph, "00g_seed") == {"00_setup"}
+
+
+def test_selection_closure_of_a_setup_file_excludes_later_setup_files() -> None:
+    """Nothing a later setup file produces can be needed by an earlier one."""
+    graph = depgraph.build(_setup_suite())
+    assert "00z_last" not in depgraph.selection_closure(graph, "00g_seed")
+
+
+def test_selection_closure_of_the_last_setup_file_pulls_the_whole_prefix() -> None:
+    graph = depgraph.build(_setup_suite())
+    assert depgraph.selection_closure(graph, "00z_last") == {"00_setup", "00g_seed"}
+
+
+def test_selection_closure_of_the_first_setup_file_is_empty() -> None:
+    graph = depgraph.build(_setup_suite())
+    assert depgraph.selection_closure(graph, "00_setup") == set()
+
+
+def test_selection_closure_of_a_setup_file_includes_its_declared_requires() -> None:
+    """The declared closure and the setup prefix are both pulled, not one or the other."""
+    graph = depgraph.build(
+        [
+            _node("00_setup", layer="setup"),
+            _node("00g_seed", layer="setup", requires=("00m_fixture",)),
+            _node("00m_fixture", layer="setup"),
+            _node("00z_last", layer="setup"),
+        ]
+    )
+    assert depgraph.selection_closure(graph, "00g_seed") == {"00_setup", "00m_fixture"}
+
+
+def test_selection_closure_of_a_prefix_setup_file_is_transitive() -> None:
+    """An earlier setup file's own declared producer comes along with it."""
+    graph = depgraph.build(
+        [
+            _node("00_setup", layer="setup"),
+            _node("00b_early", layer="setup", requires=("00_setup",)),
+            _node("00g_seed", layer="setup"),
+        ]
+    )
+    assert depgraph.selection_closure(graph, "00g_seed") == {"00_setup", "00b_early"}
+
+
+def test_selection_closure_matches_closure_for_a_non_setup_file() -> None:
+    """Non-setup selection is unchanged: it already depended on every setup file."""
+    graph = depgraph.build(_setup_suite())
+    assert depgraph.selection_closure(graph, "01_api") == depgraph.closure(graph, "01_api")
+    assert depgraph.selection_closure(graph, "01_api") == {"00_setup", "00g_seed", "00z_last"}
+
+
+def test_selection_closure_excludes_the_stem_itself() -> None:
+    graph = depgraph.build(_setup_suite())
+    assert "00g_seed" not in depgraph.selection_closure(graph, "00g_seed")
+
+
+def test_selection_closure_of_an_unknown_stem_raises() -> None:
+    graph = depgraph.build(_setup_suite())
+    with pytest.raises(depgraph.UnknownStemError):
+        depgraph.selection_closure(graph, "99_nope")
+
+
+def test_selection_closure_is_independent_of_node_order() -> None:
+    forward = depgraph.build(_setup_suite())
+    backward = depgraph.build(list(reversed(_setup_suite())))
+    assert depgraph.selection_closure(forward, "00z_last") == depgraph.selection_closure(
+        backward, "00z_last"
+    )
+
+
+def test_selection_closure_leaves_the_blocking_closure_untouched() -> None:
+    """``closure`` still answers the blocking question: a setup file has no producer."""
+    graph = depgraph.build(_setup_suite())
+    assert depgraph.closure(graph, "00g_seed") == set()
 
 
 # ----------------------------------------------------------------------------- build

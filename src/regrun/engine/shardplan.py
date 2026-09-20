@@ -11,8 +11,9 @@ timings the fallback weight is the file's test count, which is a poor proxy for
 duration but a much better one than nothing.
 
 Everything is deterministic and independent of input order: units sort by weight
-descending then stem ascending, and an equal-weight tie goes to the lowest shard
-index. A pipeline author can therefore diff two plans and trust the difference.
+descending then by run order (``ordering``) ascending, and an equal-weight tie
+goes to the lowest shard index. A pipeline author can therefore diff two plans
+and trust the difference.
 
 SHARDING REQUIRES DISJOINT ENVIRONMENTS — each shard needs its own database and
 its own index prefix. Two shards against one stack will cross-contaminate each
@@ -20,11 +21,23 @@ other's fixtures. regrun cannot verify this; it is a hard precondition of using
 the feature.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from regrun.engine.depgraph import FileNode
+from regrun.engine.ordering import run_order_key
 
 __all__ = ["Shard", "ShardSpecError", "parse_shard_spec", "plan_shards"]
+
+
+def _order_key_of(nodes: list[FileNode]) -> Callable[[str], tuple[int, str]]:
+    """A run-order key function for these nodes' stems, from the one primitive.
+
+    Every stem list this module hands out is in the order the runner will execute
+    it, so a printed plan can be read against a report line by line.
+    """
+    layers = {node.stem: node.layer for node in nodes}
+    return lambda stem: run_order_key(stem, layers[stem])
 
 
 class ShardSpecError(ValueError):
@@ -35,7 +48,8 @@ class ShardSpecError(ValueError):
 class Shard:
     """One shard of a planned split.
 
-    ``stems`` is setup-first then alphabetical, matching the canonical run order.
+    ``stems`` is in the canonical run order (``ordering``): the setup layer first,
+    then the shard's own files.
     ``weight`` covers the shard's NON-setup units only: setup runs everywhere, so
     it is not part of what the balance is trying to even out.
     """
@@ -48,16 +62,16 @@ class Shard:
 
 @dataclass
 class _Unit:
-    """A group of files that must run together, with its combined weight."""
+    """A group of files that must run together, with its combined weight.
+
+    ``key`` is the run-order key of the unit's EARLIEST file, which is both its
+    canonical name and the tie-break that keeps a plan from wobbling.
+    """
 
     stems: list[str]
     weight: float
     serial: bool
-
-    @property
-    def key(self) -> str:
-        """Canonical name of the unit: its lowest stem."""
-        return min(self.stems)
+    key: tuple[int, str]
 
 
 def parse_shard_spec(spec: str) -> tuple[int, int]:
@@ -80,7 +94,8 @@ def _components(nodes: list[FileNode]) -> list[list[str]]:
     Edges are treated as UNDIRECTED: coupling is symmetric for the purpose of
     "must these files run together", regardless of which one declared it.
     """
-    stems = sorted(node.stem for node in nodes)
+    order_key = _order_key_of(nodes)
+    stems = sorted((node.stem for node in nodes), key=order_key)
     parent = {stem: stem for stem in stems}
 
     def find(stem: str) -> str:
@@ -105,7 +120,8 @@ def _components(nodes: list[FileNode]) -> list[list[str]]:
     groups: dict[str, list[str]] = {}
     for stem in stems:
         groups.setdefault(find(stem), []).append(stem)
-    return [sorted(members) for _root, members in sorted(groups.items())]
+    members_in_order = [sorted(members, key=order_key) for members in groups.values()]
+    return sorted(members_in_order, key=lambda members: order_key(members[0]))
 
 
 def _build_units(nodes: list[FileNode], weights: dict[str, float] | None) -> list[_Unit]:
@@ -118,11 +134,13 @@ def _build_units(nodes: list[FileNode], weights: dict[str, float] | None) -> lis
             return weights[stem]
         return float(by_stem[stem].test_count)
 
+    order_key = _order_key_of(non_setup)
     units = [
         _Unit(
             stems=members,
             weight=sum(weight_of(stem) for stem in members),
             serial=any(by_stem[stem].serial for stem in members),
+            key=order_key(members[0]),
         )
         for members in _components(non_setup)
     ]
@@ -158,7 +176,8 @@ def plan_shards(
     if total < 1:
         raise ShardSpecError(f"invalid shard count {total}: must be >= 1")
 
-    setup_stems = sorted(node.stem for node in nodes if node.is_setup)
+    order_key = _order_key_of(nodes)
+    setup_stems = sorted((node.stem for node in nodes if node.is_setup), key=order_key)
     units = _build_units(nodes, weights)
 
     if total == 1:
@@ -174,7 +193,7 @@ def plan_shards(
 
     shards: list[Shard] = []
     for index, bucket in enumerate(buckets, start=1):
-        stems = sorted(stem for unit in bucket for stem in unit.stems)
+        stems = sorted((stem for unit in bucket for stem in unit.stems), key=order_key)
         shards.append(
             Shard(
                 index=index,

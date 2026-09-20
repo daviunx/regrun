@@ -16,17 +16,25 @@ Two kinds of dependency exist:
   the executor to every file that follows a failed setup file, and the only
   mechanism covering one setup file blocking the NEXT one.
 
+Selecting a file to RUN is a wider question than blocking, and ``requires`` plus
+the implicit rule above does not answer it for a setup file: the setup layer is
+ordered and single-homed, so a later setup file reads what an earlier one
+declared. ``selection_closure`` adds that ordered prefix, without making it an
+edge.
+
 Every result is deterministic and independent of input order: a graph built
 from a shuffled node list answers identically, so a report or a shard plan
-never moves for a reason nobody can see.
+never moves for a reason nobody can see. Two kinds of sorting live here and
+they are not the same thing: anything answering "which file comes first" goes
+through ``ordering``, while the plain stem sorts inside the traversals exist
+only to make walking a SET reproducible and carry no run-order meaning.
 """
 
 from dataclasses import dataclass, field
 
-# Layer rank for the canonical run order (layer rank, then filename). Defined
-# HERE, once: the runner, the linter and the shard planner must all consume the
-# same order, and a second copy is a silent desync waiting for a fifth layer.
-LAYER_ORDER = {"setup": 0, "api": 1, "mcp": 2, "chat": 3}
+# The run order itself lives in ``ordering``, the one place it is defined. It is
+# re-exported here because the graph is where most callers meet it.
+from regrun.engine.ordering import LAYER_ORDER, run_order_key
 
 __all__ = [
     "LAYER_ORDER",
@@ -37,6 +45,7 @@ __all__ = [
     "build",
     "closure",
     "detect_cycles",
+    "selection_closure",
     "validate_order",
 ]
 
@@ -73,8 +82,9 @@ class Graph:
     """Resolved dependencies for a whole suite.
 
     ``deps[stem]`` is the DIRECT dependency set of ``stem``, declared plus
-    implicit. ``order`` is the stems in sorted order, which is what every
-    deterministic traversal here iterates.
+    implicit. ``order`` is the stems in CANONICAL RUN ORDER (``ordering``), which
+    is what every deterministic traversal here iterates, and ``setup_stems`` is
+    the setup layer in that same order.
     """
 
     nodes: dict[str, FileNode]
@@ -83,7 +93,11 @@ class Graph:
 
     @property
     def order(self) -> list[str]:
-        return sorted(self.nodes)
+        return sorted(self.nodes, key=self.key_of)
+
+    def key_of(self, stem: str) -> tuple[int, str]:
+        """Run-order key of one stem, from the engine's single ordering primitive."""
+        return run_order_key(stem, self.nodes[stem].layer)
 
 
 def build(nodes: list[FileNode]) -> Graph:
@@ -95,7 +109,12 @@ def build(nodes: list[FileNode]) -> Graph:
     them as findings against the files that declared them.
     """
     by_stem = {node.stem: node for node in nodes}
-    setup_stems = tuple(sorted(node.stem for node in nodes if node.is_setup))
+    setup_stems = tuple(
+        sorted(
+            (node.stem for node in nodes if node.is_setup),
+            key=lambda stem: run_order_key(stem, "setup"),
+        )
+    )
 
     deps: dict[str, set[str]] = {}
     for node in nodes:
@@ -131,6 +150,49 @@ def closure(graph: Graph, stem: str) -> set[str]:
         pending.extend(sorted(graph.deps.get(current, set())))
     seen.discard(stem)
     return seen
+
+
+def selection_closure(graph: Graph, stem: str) -> set[str]:
+    """Everything that has to RUN for ``stem`` to be runnable on its own.
+
+    ``closure`` answers the BLOCKING question (whose failure invalidates this
+    file), and a setup file has no producer to be invalidated by. Selecting a
+    file to run asks a wider question, because the setup layer is ORDERED and
+    single-homed: the first setup file owns the suite's ``variables:`` and
+    ``meta.env_file``, and every setup file after it may read them. So a setup
+    stem also pulls every setup file SORTING BEFORE IT, plus those files' own
+    declared closures.
+
+    "Before" is the engine's one run order (``ordering.run_order_key``), never a
+    comparison of its own: a selection that ordered files differently from the
+    runner would pull a producer the full suite runs afterwards, or drop one it
+    runs first, and only punctuated names would show it.
+
+    A LATER setup file is never pulled: nothing it produces can have existed when
+    the selected file ran in a full suite, so needing it would be a defect rather
+    than a dependency. For a non-setup stem the answer is exactly ``closure``,
+    which already carries the whole setup layer.
+
+    The prefix is deliberately NOT a graph edge. Blocking is unchanged (a failed
+    setup file already blocks every later file through the setup gate), shard
+    planning is unchanged (setup runs in every shard), and the graph keeps its
+    guarantee that setup ordering can never surface as a cycle.
+    """
+    if stem not in graph.nodes:
+        raise UnknownStemError(f"unknown file '{stem}'")
+
+    selected = closure(graph, stem)
+    if not graph.nodes[stem].is_setup:
+        return selected
+
+    boundary = graph.key_of(stem)
+    for earlier in graph.setup_stems:
+        if graph.key_of(earlier) >= boundary:
+            continue
+        selected.add(earlier)
+        selected |= closure(graph, earlier)
+    selected.discard(stem)
+    return selected
 
 
 def _normalize_cycle(path: list[str]) -> tuple[str, ...]:
