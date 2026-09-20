@@ -6,8 +6,7 @@ count; :func:`build_failure_diagnostics` produces a sanitized, truncated
 :class:`~regrun.engine.reporter.FailureDiagnostics` ready to attach to a
 ``TestResult``.
 
-Redaction reuses the canonical ``SENSITIVE_PATTERNS`` field set from
-``documentation/standards/development/observability.md`` §4 (field-name
+Redaction reuses the canonical ``SENSITIVE_PATTERNS`` field set (field-name
 redaction of headers) plus value scrubbing of any resolved auth-token value
 that could be echoed back in a response body.
 """

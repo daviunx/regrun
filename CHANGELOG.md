@@ -33,6 +33,7 @@ File isolation: a suite file declares what it consumes, and the engine can then 
   **Lint rule E002 compares by the same key, so its verdict can flip for such a pair.** A suite holding cleanup file `10_cleanup.yaml` next to mcp file `10_cleanup-extra.yaml` was not flagged under the filename comparison and is flagged now: the mcp file does run after the cleanup file, and the rule was wrong before, not now. Renaming either file clears it.
 - **Unknown `meta` keys are now rejected at load** (`extra="forbid"`, matching `Assertion` and `Test` since 0.9.0). A typo'd `require:` was previously accepted and silently ignored, leaving the file with no declared dependency, selection blind to the coupling, and nothing anywhere saying so. The keys only external orchestration reads (`health_path`, `mcp_health_path`) are declared fields, so a suite carrying them still parses. *No opt-out*: a rejected key is a defect, fix the key.
 - **`--skip-setup` now drops the setup layer whatever else was selected.** It previously took effect only when `--layer` was also given, so on its own it silently did nothing.
+- **Documentation examples use a neutral `myapp` / `MYAPP_*` placeholder** for the product name, its env-var prefix, its database and its service host, so a reader can map them onto their own suite. Project links now include the maintaining company. No behaviour change.
 
 ### Internal
 

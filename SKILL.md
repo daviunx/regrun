@@ -122,10 +122,10 @@ groups:
 # meta:
 #   runner: sql
 #   sql_connection:
-#     docker_container: "{{ env.get('RALLY_COMPOSE_PROJECT', 'rally') }}-db-1"
+#     docker_container: "{{ env.get('MYAPP_COMPOSE_PROJECT', 'myapp') }}-db-1"
 #     docker_user: postgres
-#     database: "{{ env.get('RALLY_DB', 'rally_prod') }}"
-#     fallback_dsn: "{{ env.get('RALLY_DSN', 'postgres://postgres@localhost:5432/rally_prod') }}"
+#     database: "{{ env.get('MYAPP_DB', 'myapp_test') }}"
+#     fallback_dsn: "{{ env.get('MYAPP_DSN', 'postgres://postgres@localhost:5432/myapp_test') }}"
 - id: "SQL.1"
   name: "no orphaned rows"
   runner: sql

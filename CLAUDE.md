@@ -66,11 +66,11 @@ Anyone can read this code, fork it, and open a PR against it; anyone who runs `p
 
 **Known open gaps** — do not describe this repo as hardened until they close:
 
-| Gap | Task |
-|-----|------|
-| No committed `poetry.lock` (gitignored) → CI resolves deps fresh and unpinned, and that job gates the publish | `beb1608a` |
-| No dependency scanning at all — `osv-scanner` reads `poetry.lock`, so it is blocked on the row above | `beb1608a` |
-| `pypi` environment has no tag-protection rule, so `needs:` is a SOFT gate — a tag can be pushed from a branch with the test job deleted | `ba65649f` (operator, repo settings) |
+| Gap | Owner |
+|-----|-------|
+| No committed `poetry.lock` (gitignored) → CI resolves deps fresh and unpinned, and that job gates the publish | tracked separately |
+| No dependency scanning at all — `osv-scanner` reads `poetry.lock`, so it is blocked on the row above | tracked separately |
+| `pypi` environment has no tag-protection rule, so `needs:` is a SOFT gate — a tag can be pushed from a branch with the test job deleted | operator, repo settings |
 
 ---
 
@@ -85,8 +85,8 @@ Anyone can read this code, fork it, and open a PR against it; anyone who runs `p
 - **The tag push is irreversible.** It lands on public pypi.org/project/regrun — a burned version can be yanked but NEVER reused. This is the one push in the fleet that stays operator-gated; the `main` push is free
 - **A green pipeline does not prove the upload landed.** Verify BOTH `gh run watch` green AND the live version from the PyPI JSON API
 - **A red suite burns the tag.** `publish.yml` calls `test.yml` and depends on it, so a tag whose suite fails publishes NOTHING — and that version number can never be reused on public PyPI. Run `poetry run pytest && poetry run mypy src/regrun` locally BEFORE tagging, not after
-- **mypy runs at default strictness, not `strict = true`.** A documented deviation from `python/03-tooling.md`, recorded in `[tool.mypy]` — ratchet task `5500a359`. Do not describe regrun's tooling as fully standards-compliant until that lands
-- **ruff's select is EXPLICIT and narrow — `["E4", "E7", "E9", "F"]`.** Those four are ruff's pre-0.16 default; the block exists because the default is not a stable contract. 0.16.0 widened it (I, BLE, UP, RUF, SIM, PIE, DTZ, PYI) and reddened CI on unchanged code, since the Lint job installed ruff unpinned. `ruff check` passing does NOT mean the fleet's mandated 14-group ruleset passes — that is 156 raw findings, task `0e89a609`
+- **mypy runs at default strictness, not `strict = true`.** A documented deviation recorded in `[tool.mypy]`, with the ratchet toward it tracked separately. Do not describe regrun's tooling as fully standards-compliant until that lands
+- **ruff's select is EXPLICIT and narrow — `["E4", "E7", "E9", "F"]`.** Those four are ruff's pre-0.16 default; the block exists because the default is not a stable contract. 0.16.0 widened it (I, BLE, UP, RUF, SIM, PIE, DTZ, PYI) and reddened CI on unchanged code, since the Lint job installed ruff unpinned. `ruff check` passing does NOT mean the wider 14-group ruleset passes — that is 156 raw findings, tracked separately
 - **ruff's version is pinned in `[dependency-groups] dev`, and CI installs it from there** via `pip install --group dev .` — never `pip install ruff`. A gate that resolves its own tooling at run time fails on someone else's release date, not on your commit
-- Consumers pin regrun in the monorepo — after publishing, bump the pin where it is consumed and `poetry lock` there
+- Consumers pin regrun downstream — after publishing, bump the pin where it is consumed and `poetry lock` there
 - This repo is PUBLIC. Never put customer names, internal hostnames, tokens, or fleet-internal URLs in code, tests, docs, or this file

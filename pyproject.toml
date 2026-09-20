@@ -31,6 +31,7 @@ dependencies = [
 Homepage = "https://github.com/daviunx/regrun"
 Repository = "https://github.com/daviunx/regrun"
 Issues = "https://github.com/daviunx/regrun/issues"
+Company = "https://neomanex.com"
 
 [project.scripts]
 regrun = "regrun.cli:cli"
@@ -49,8 +50,8 @@ line-length = 100
 # red on code that had not changed — CI installed ruff unpinned, so the gate
 # reddened with zero commits. These four groups ARE ruff's pre-0.16 default, so
 # this pins the bar already in force on main; it does not lower it.
-# The fleet-mandated 14-group select (documentation/standards/python/03-tooling.md)
-# plus line-length 100 -> 88 is a measured 156 raw findings — ratchet task 0e89a609.
+# The wider 14-group select plus line-length 100 -> 88 is a measured 156 raw
+# findings, tracked as its own ratchet rather than bundled into an unrelated change.
 select = ["E4", "E7", "E9", "F"]
 
 [dependency-groups]
@@ -74,16 +75,15 @@ warn_redundant_casts = true
 warn_unused_configs = true
 warn_unused_ignores = true
 no_implicit_optional = true
-# DEVIATION from documentation/standards/python/03-tooling.md (`strict = true`).
-# Default strictness is clean (0 errors); --strict reports 69, ~50 of them
-# mechanical [type-arg] bare generics. Landing blocking-at-default now beats an
-# advisory strict job nobody actions. Ratchet to strict: task 5500a359.
+# DEVIATION from the target of `strict = true`. Default strictness is clean
+# (0 errors); --strict reports 69, ~50 of them mechanical [type-arg] bare
+# generics. Landing blocking-at-default now beats an advisory strict job nobody
+# actions. Ratcheting to strict is tracked separately.
 strict = false
 
 # Genuine third-party packages shipping no py.typed and having no stubs on
 # PyPI. NEVER add first-party `regrun.*` here -- that degrades the whole package
-# to Any and mypy passes while checking nothing
-# (documentation/standards/python/03-tooling.md, incident 2026-07-17).
+# to Any and mypy passes while checking nothing.
 # PyYAML is NOT listed: real stubs exist and are installed via types-PyYAML.
 [[tool.mypy.overrides]]
 module = ["jsonpath_ng.*"]
@@ -109,7 +109,8 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 [tool.coverage.report]
 show_missing = true
 # Measured floor per testing/overview.md § Coverage Enforcement (ratchet: only
-# goes UP, rounded down to nearest 5). Raising toward the 80 target: task ac0e9586.
+# goes UP, rounded down to nearest 5). Raising toward the 80 target is tracked
+# separately.
 fail_under = 70
 exclude_lines = [
     "pragma: no cover",
