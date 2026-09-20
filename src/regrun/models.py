@@ -41,6 +41,24 @@ class TestMeta(BaseModel):
     # rendered string FAILS the test instead of silently becoming a literal.
     # Per-file opt-out for suites that deliberately template literal braces.
     strict_vars: bool = True
+    # Declared file dependencies, by stem (filename without ``.yaml``). A file
+    # whose dependency FAILED is not run: its tests are reported BLOCKED rather
+    # than failed, so one broken producer yields one actionable failure instead
+    # of a cascade. Setup is the bootstrap contract every file already depends
+    # on and is never listed. Empty means "depends on nothing but setup".
+    requires: list[str] = Field(default_factory=list)
+    # The file asserts process-global behaviour (a rate limit, a global counter,
+    # a singleton lock) and therefore cannot share a run with unrelated traffic.
+    # Sharding keeps every serial file to itself.
+    serial: bool = False
+    # Per-file wall-clock budget. Exceeding it is reported as a breach; whether
+    # a breach reddens the run is the caller's opt-in, never implicit.
+    budget_seconds: float | None = Field(default=None, gt=0)
+    # Read by external orchestration (the health probe that waits for a stack
+    # before invoking the runner) from the first suite file. The engine never
+    # consumes them; they are declared so a suite carrying them still parses.
+    health_path: str | None = None
+    mcp_health_path: str | None = None
 
 
 class AuthConfig(BaseModel):
