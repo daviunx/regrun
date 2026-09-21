@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-09-20
+## [Unreleased]
+
+### Fixed
+
+- **Lint rule W012 now scans a file's `auth:` profiles**, not only its groups. A profile field is a use like any other: `token: "{{ USER_JWT }}"` consumes a value, and when a sibling non-setup file captures it the file is coupled to that sibling. Reading only the groups left every profile field a blind spot, so such a file linted clean, passed a full ordered run, and then failed on an unresolved variable the moment it ran alone (`--file`) or landed in another shard (`--shard`), which is exactly the coupling a clean W012 is supposed to rule out before a suite is sharded. Every string field of every profile counts (`token:`, `org_header:`), in every template form the rule already read (`{{ VAR }}`, `{{ VAR | filter }}`, `{{ VAR.field }}`), through the same reference extraction the group scan uses. The clearing conditions are unchanged: produce the value locally, declare `meta.requires:`, or have the producer be a setup file. A profile **no test selects** is flagged too, and the finding names the profile and the producing file: profiles resolve lazily, only for the test that names one, so an unused profile never fails at run time while still pointing at a fixture the file does not own; the fix is to drop the profile or to own the value. Still a warning, and one finding per borrowed value however many places borrow it.
+
+### Documentation
+
+- **The sharding section now states its lint precondition**: shard a suite only once it lints W012-clean, because a file coupled to another by run order alone breaks on a shard boundary with an unresolved variable. A declared dependency is safe, since the shard unit is a connected component of the `requires` graph and a file and its closure always land in the same shard. A clean W012 is the precondition rather than the whole proof: lint cannot see coupling that carries no variable reference, such as a shared fixture-name literal or a count over a shared table.
 
 File isolation: a suite file declares what it consumes, and the engine can then act on it. One file can be run and trusted, a red run costs one file's re-run instead of the whole suite, a broken producer yields one failure instead of a cascade, and a suite can be split across disjoint stacks.
 
