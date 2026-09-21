@@ -396,7 +396,7 @@ regrun lint TARGET [OPTIONS]
 | W009 | warn | A `json_path` condition whose only operator is `exists: true`, which a JSONPath match on `null` satisfies. Suppress per-test with `# lint: allow-exists` |
 | W010 | warn | A `$.data.*` path in an mcp-layer file, where asserts and captures run on the post-normalize body |
 | W011 | warn | Fixture-name prefixes created by create-shaped tests that appear in no sweep step or `cleanup: true` group (unswept fixture families) |
-| W012 | warn | A file uses a variable another suite file captures without declaring `meta.requires:` for it. Cleared by declaring it, by producing the value locally, or by the producer being a setup file |
+| W012 | warn | A file uses a variable another suite file captures without declaring `meta.requires:` for it. A use is a template reference anywhere in the file's groups **or in any field of any `auth:` profile** (`token:`, `org_header:`), including a profile no test selects: profiles resolve lazily, so an unused one never fails at run time while still borrowing a sibling's fixture. Cleared by declaring the dependency, by producing the value locally, or by the producer being a setup file |
 
 ```bash
 # Lint before committing suite changes

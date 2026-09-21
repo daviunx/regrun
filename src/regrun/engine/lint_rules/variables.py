@@ -73,6 +73,32 @@ def _referenced(raw: dict) -> set[str]:
     return names - TEMPLATE_GLOBALS
 
 
+def _auth_references(raw: dict) -> dict[str, set[str]]:
+    """Variable name -> the names of the auth profiles whose fields reference it.
+
+    An auth profile is a use like any other: ``token: "{{ USER_JWT }}"`` consumes
+    a value, and if a sibling file captures it the coupling is exactly the one
+    W012 exists to surface. Reading only the ``groups`` made every profile field
+    a blind spot, so a file whose credentials came from a sibling linted clean,
+    passed a full ordered run, and then failed on an unresolved variable the
+    moment it ran alone or landed in another shard. Every string field of every
+    profile counts (``token``, ``org_header``), through the same reference
+    extraction the group scan uses.
+
+    The reference is recorded whether or not any test SELECTS the profile: a
+    profile is resolved lazily, only for the test that names it, so an unused one
+    never fails at run time. It is dead residue pointing at a fixture the file
+    does not own, and naming it is what lets the author drop it or own the value.
+    """
+    refs: dict[str, set[str]] = {}
+    for profile, config in (raw.get("auth") or {}).items():
+        for text in iter_strings(config):
+            for name in VAR_REF_RE.findall(text):
+                if name not in TEMPLATE_GLOBALS:
+                    refs.setdefault(name, set()).add(str(profile))
+    return refs
+
+
 def _nodes(parsed: Parsed) -> list[FileNode]:
     """Graph nodes with unsatisfiable ``requires`` entries dropped.
 
@@ -107,10 +133,15 @@ def _producers(parsed: Parsed) -> dict[str, list[tuple[str, str]]]:
 def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
     """W012 — a value another file produces, used without declaring the dependency.
 
-    Cleared by declaring ``requires:`` (directly or transitively), by producing
-    the value locally, or by the producer being a ``layer: setup`` file: the
-    bootstrap contract every file already depends on, which is why it is never
-    declared.
+    A use is a template reference anywhere in the file's groups OR in any field
+    of any ``auth:`` profile. Cleared by declaring ``requires:`` (directly or
+    transitively), by producing the value locally, or by the producer being a
+    ``layer: setup`` file: the bootstrap contract every file already depends on,
+    which is why it is never declared.
+
+    One finding per borrowed value, whatever the borrow count: a value used both
+    in the groups and in a profile is one coupling with one fix, and the group
+    message is the one that points at the request that breaks.
     """
     producers = _producers(parsed)
     closures = _closures(graph)
@@ -120,7 +151,9 @@ def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
     for path, raw, _text in parsed:
         local = _captured(raw)
         declared = closures.get(path.stem, set())
-        for name in sorted(_referenced(raw)):
+        in_groups = _referenced(raw)
+        in_auth = _auth_references(raw)
+        for name in sorted(in_groups | set(in_auth)):
             if name in BUILTIN_VARS or name in local:
                 continue
             foreign = [
@@ -130,16 +163,25 @@ def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
             ]
             if not foreign:
                 continue
+            requires_hint = f"add meta.requires: [{Path(foreign[0]).stem}]"
+            if name in in_groups:
+                message = (
+                    f"uses '{{{{{name}}}}}' captured in {foreign[0]} without declaring it "
+                    f"({requires_hint})"
+                )
+            else:
+                profiles = ", ".join(sorted(in_auth[name]))
+                message = (
+                    f"auth profile '{profiles}' uses '{{{{{name}}}}}' captured in {foreign[0]} "
+                    f"without declaring it ({requires_hint}, or drop the profile)"
+                )
             findings.append(
                 LintFinding(
                     file=path.name,
                     test_id="-",
                     rule="W012",
                     severity=WARN,
-                    message=(
-                        f"uses '{{{{{name}}}}}' captured in {foreign[0]} without declaring it "
-                        f"(add meta.requires: [{Path(foreign[0]).stem}])"
-                    ),
+                    message=message,
                 )
             )
     return findings
