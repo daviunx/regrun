@@ -99,6 +99,24 @@ def _auth_references(raw: dict) -> dict[str, set[str]]:
     return refs
 
 
+def _auth_message(profiles: list[str], name: str, producer: str, requires_hint: str) -> str:
+    """The W012 message for a borrowed value used only by ``auth:`` profiles.
+
+    Every profile that borrows the value is named: which one to drop is the
+    author's decision, and a message naming one of several sends them to fix a
+    file that still borrows it elsewhere.
+    """
+    quoted = ", ".join(f"'{profile}'" for profile in profiles)
+    if len(profiles) == 1:
+        subject, drop = f"auth profile {quoted} uses", "or drop the profile"
+    else:
+        subject, drop = f"auth profiles {quoted} use", "or drop them"
+    return (
+        f"{subject} '{{{{{name}}}}}' captured in {producer} without declaring it "
+        f"({requires_hint}, {drop})"
+    )
+
+
 def _nodes(parsed: Parsed) -> list[FileNode]:
     """Graph nodes with unsatisfiable ``requires`` entries dropped.
 
@@ -170,11 +188,7 @@ def _foreign_captures(parsed: Parsed, graph: Graph) -> list[LintFinding]:
                     f"({requires_hint})"
                 )
             else:
-                profiles = ", ".join(sorted(in_auth[name]))
-                message = (
-                    f"auth profile '{profiles}' uses '{{{{{name}}}}}' captured in {foreign[0]} "
-                    f"without declaring it ({requires_hint}, or drop the profile)"
-                )
+                message = _auth_message(sorted(in_auth[name]), name, foreign[0], requires_hint)
             findings.append(
                 LintFinding(
                     file=path.name,

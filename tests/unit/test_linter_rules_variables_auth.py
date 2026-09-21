@@ -163,6 +163,35 @@ def test_w012_flags_a_profile_no_test_selects(tmp_path: Path) -> None:
     assert "user" in findings[0].message
 
 
+def test_w012_names_every_profile_that_borrows_the_value(tmp_path: Path) -> None:
+    """Which profile to drop is the author's call, so all of them are named."""
+    _producer(tmp_path)
+    _write(
+        tmp_path,
+        "02_things.yaml",
+        {
+            "meta": {"product": "myapp", "layer": "api", "runner": "httpx"},
+            "auth": {
+                "user": {"type": "bearer", "token": "{{ USER_JWT }}"},
+                "user_key": {"type": "api_key", "token": "{{ USER_JWT }}"},
+            },
+            "groups": [_reader_group()],
+        },
+    )
+    findings = _of_rule(lint_directory(tmp_path), "W012")
+    assert len(findings) == 1
+    message = findings[0].message
+    assert "auth profiles 'user', 'user_key' use" in message
+    assert "01_login.yaml" in message
+
+
+def test_w012_singular_phrasing_for_one_profile(tmp_path: Path) -> None:
+    _producer(tmp_path)
+    _consumer(tmp_path)
+    findings = _of_rule(lint_directory(tmp_path), "W012")
+    assert "auth profile 'user' uses" in findings[0].message
+
+
 def test_w012_flags_a_reference_in_a_profile_org_header(tmp_path: Path) -> None:
     """Every string field of a profile is scanned, not the token alone."""
     _write(
