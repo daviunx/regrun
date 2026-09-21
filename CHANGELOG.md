@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The sharding section now states its lint precondition**: shard a suite only once it lints W012-clean, because a file coupled to another by run order alone breaks on a shard boundary with an unresolved variable. A declared dependency is safe, since the shard unit is a connected component of the `requires` graph and a file and its closure always land in the same shard. A clean W012 is the precondition rather than the whole proof: lint cannot see coupling that carries no variable reference, such as a shared fixture-name literal or a count over a shared table.
 
+## [0.10.0] - 2026-09-20
+
 File isolation: a suite file declares what it consumes, and the engine can then act on it. One file can be run and trusted, a red run costs one file's re-run instead of the whole suite, a broken producer yields one failure instead of a cascade, and a suite can be split across disjoint stacks.
 
 ### Added
